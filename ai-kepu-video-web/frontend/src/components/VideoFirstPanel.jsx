@@ -75,6 +75,22 @@ export function VideoFirstPanel({ taskId, segments = [], ratio = '16:9', product
       setBusy(false)
     }
   }
+  const cancelFutureCalls = async () => {
+    if (!window.confirm('停止后续尚未提交的图生视频请求？已提交云端任务无法保证取消或退款。')) return
+    setBusy(true)
+    setError('')
+    try {
+      const result = await request({
+        url: `${ROOT}/tasks/${encodeURIComponent(taskId)}/video-first/cancel`,
+        method: 'post',
+      })
+      setError(result.message || '已请求停止新任务')
+    } catch (e) {
+      setError(e?.response?.data?.detail || '暂停请求失败')
+    } finally {
+      setBusy(false)
+    }
+  }
   const running = ['generating', 'rendering'].includes(job.status)
   const url = job.video_url ? normalizeMediaUrl(job.video_url) : ''
   return <section className="video-first-panel" aria-label="真实 AI 视频生产">
@@ -118,6 +134,8 @@ export function VideoFirstPanel({ taskId, segments = [], ratio = '16:9', product
         disabled={!available || busy || running || activeFlow}>
         {busy ? '正在提交…' : job.status === 'completed' ? '重新检查并生成动态成片' : '生成全片 AI 动态视频'}
       </button>
+      {running && !activeFlow ? <button type="button" className="button button-secondary" disabled={busy}
+        onClick={cancelFutureCalls}>停止后续付费镜头</button> : null}
     </div>
     {!available ? <small className="video-first-help">
       {!count ? '请先完成 AI 分镜。' : count > 12
