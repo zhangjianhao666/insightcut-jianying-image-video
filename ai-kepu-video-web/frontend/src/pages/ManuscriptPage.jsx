@@ -168,7 +168,7 @@ export function ManuscriptPage() {
         style: buildVideoStyle(prepared),
         ratio: prepared.ratio || '16:9',
         length: inputMode === 'theme' ? normalizeLength(prepared.length) : 0,
-        voice_type: prepared.template_voice_type || prepared.ip_voice_type || voiceType || undefined,
+        voice_type: prepared.silent_video ? 'silent:default' : prepared.template_voice_type || prepared.ip_voice_type || voiceType || undefined,
         tts_options: prepared.template_tts_options || readLastTtsOptions(),
         execution_mode: 'review_first',
         script_policy: inputMode === 'script' ? 'verbatim' : 'rewrite',
@@ -374,6 +374,14 @@ export function ManuscriptPage() {
             </fieldset>
             <fieldset className="control-group"><legend>视频比例</legend><div className="segmented-control">{ratioOptions.map(ratio => <button type="button" key={ratio} className={draft.ratio === ratio ? 'is-selected' : ''} onClick={() => patchDraft({ ratio })}>{ratio}</button>)}</div></fieldset>
             <label className="field-label">创作风格<select value={draft.text_style || '知识科普'} onChange={event => patchDraft({ text_style: event.target.value })}>{textStyles.map(style => <option key={style}>{style}</option>)}</select></label>
+            <label className="field-label">
+              <span>配音方式</span>
+              <select aria-label="配音方式" value={draft.silent_video ? 'silent' : 'narration'} onChange={event => patchDraft({ silent_video: event.target.value === 'silent' })}>
+                <option value="narration">标准配音（需要豆包或 MiMo TTS 凭证）</option>
+                <option value="silent">无旁白（本地静音，先完成画面闭环）</option>
+              </select>
+              <small>无旁白模式不会调用 TTS 服务，但仍会生成静音时间轴以便 FFmpeg 导出。将来可以在工作台切回正常音色。</small>
+            </label>
           </section>
 
           <footer className="settings-action-bar">
