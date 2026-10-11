@@ -1,5 +1,4 @@
 """No external calls, API credentials, or billing in these tests."""
-import json
 import time
 from pathlib import Path
 
