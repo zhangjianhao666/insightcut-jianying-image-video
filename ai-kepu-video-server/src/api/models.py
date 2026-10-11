@@ -78,6 +78,7 @@ class CreateTaskRequest(BaseModel):
     )
     source_draft_id: Optional[str] = Field(None, max_length=120)
     template_id: Optional[str] = Field(None, max_length=64)
+    ip_profile_id: Optional[str] = Field(None, max_length=80, description="关联已创建的系列 IP 角色")
     generation_options: Optional[GenerationOptions] = None
     subtitle_options: Optional[SubtitleOptions] = None
 
