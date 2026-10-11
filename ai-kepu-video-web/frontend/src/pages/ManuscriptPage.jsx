@@ -7,6 +7,7 @@ import { createBatch, createTask, extractDocumentText, getConfigReadiness, listP
 import { Modal } from '../components/Modal'
 import { EmptyStateCard } from '../components/ui/EmptyStateCard'
 import { VisualStyleCard } from '../components/ui/VisualStyleCard'
+import { IpProfilePicker } from '../components/IpProfilePicker'
 import { toast } from '../lib/toast'
 import { selectProject } from '../lib/projectSelection'
 import { createDraft, estimateDuration, estimateSegments, getDraft, getLatestDraft, ratioOptions, saveDraft, textStyles, visualStyles } from '../utils/projectDrafts'
@@ -173,6 +174,7 @@ export function ManuscriptPage() {
         script_policy: inputMode === 'script' ? 'verbatim' : 'rewrite',
         source_draft_id: prepared.draft_id,
         template_id: prepared.template_id || undefined,
+        ip_profile_id: prepared.ip_profile_id || undefined,
         generation_options: prepared.generation_options || undefined,
         subtitle_options: prepared.subtitle_options || undefined,
       })
@@ -337,6 +339,7 @@ export function ManuscriptPage() {
 
           <section className="manuscript-settings-section" aria-labelledby="visual-preset-heading">
             <header className="manuscript-settings-heading"><span>02</span><h3 id="visual-preset-heading">生产预设</h3></header>
+            <IpProfilePicker value={draft.ip_profile_id || ''} onChange={id => patchDraft({ ip_profile_id: id })} />
             <fieldset className="control-group"><legend>画面风格</legend><div className="style-thumbnail-grid">{visualStyles.map(style => <VisualStyleCard key={style.value} style={style} selected={draft.visual_style === style.value} onSelect={value => patchDraft({ visual_style: value })} />)}</div></fieldset>
             <fieldset className="control-group"><legend>视频比例</legend><div className="segmented-control">{ratioOptions.map(ratio => <button type="button" key={ratio} className={draft.ratio === ratio ? 'is-selected' : ''} onClick={() => patchDraft({ ratio })}>{ratio}</button>)}</div></fieldset>
             <label className="field-label">创作风格<select value={draft.text_style || '知识科普'} onChange={event => patchDraft({ text_style: event.target.value })}>{textStyles.map(style => <option key={style}>{style}</option>)}</select></label>
