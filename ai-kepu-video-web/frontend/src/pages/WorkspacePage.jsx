@@ -827,8 +827,23 @@ export function WorkspacePage() {
         if (!await saveWorkspaceSettings({ voice_type: selectedVoice, tts_options: ttsOptions, voice_confirmed: true })) return
       }
       const latest = await getTaskWorkspace(taskId)
-      await confirmProduction(taskId, { snapshot_key: latest.snapshot_key, plan_version: latest.plan_version })
-      toast.success(selectedVoice === 'silent:default' ? '开始生成图片、静音时间轴和视频' : '已确认生产，图片、配音和视频将在后台连续生成')
+      const visualFirst = (latest.voice_type || selectedVoice) === 'silent:default'
+      if (visualFirst) {
+        const count = Number(latest.segments_count || latest.segments?.length || 0)
+        if (count > 12) {
+          toast.warning('第一版视频优先模式最多 12 个分镜，请减少分镜数量')
+          return
+        }
+        if (!window.confirm(
+          `即将按分镜真实生成 AI 动态视频：${count} 个镜头，每段 5 秒。\\n\\n预计最多请求 ${count} 段万相图生视频（已有且有效的视频素材会复用），产生的费用按百炼实际账单结算。\\n\\n注意：任一镜头失败都会停止成片，不会改用静态图片。确认开始？`
+        )) return
+      }
+      await confirmProduction(taskId, {
+        snapshot_key: latest.snapshot_key,
+        plan_version: latest.plan_version,
+        ...(visualFirst ? { confirm_paid_video: true } : {}),
+      })
+      toast.success(visualFirst ? '已开始动态视频生产：生图 → 万相图生视频 → 拼接真实 MP4' : '已确认生产，图片、配音和视频将在后台连续生成')
       workspacePolling.refresh()
     } catch (error) {
       toast.error(errorToastMessage(error))
