@@ -35,7 +35,7 @@ export function WorkspaceActionBar({
   return <footer className="workspace-actionbar">
     <div className="workspace-action-status">
       <strong>{labels[flow?.state] || stage.title}</strong>
-      <span>{flow?.error || (canProduce ? `采用当前音色：${voiceLabel}。确认后自动生成图片、配音和视频，试听与预览均可选。` : recoverable ? recoverySummary : stage.description)}</span>
+      <span>{flow?.error || (canProduce ? (workspace.voice_type === 'silent:default' ? '无旁白模式：自动生成图片与本地静音时间轴，再合成视频。不调用收费 TTS 服务。' : `采用当前音色：${voiceLabel}。确认后自动生成图片、配音和视频，试听与预览均可选。`) : recoverable ? recoverySummary : stage.description)}</span>
     </div>
     <div>
       {canProduce ? <button type="button" className="button button-primary" disabled={Boolean(busyAction)} onClick={onGenerateAssets}>{busyAction ? <LoaderCircle className="spin" size={16} /> : <Sparkles size={16} />}{flow ? '重试并生成视频' : '确认并生成视频'}</button> : null}
