@@ -19,7 +19,7 @@ class ScriptRewriter:
     def __init__(self, article_generator: Optional[ArticleGenerator] = None):
         self.article_generator = article_generator or ArticleGenerator()
 
-    def rewrite(self, raw_text: str, style: str, target_length: int = None, input_mode: str = None) -> dict:
+    def rewrite(self, raw_text: str, style: str, target_length: int = None, input_mode: str = None, ip_profile: dict = None) -> dict:
         """
         输入用户原始文案，输出改写后的旁白脚本和 50-100 字内容总结。
 
@@ -35,6 +35,9 @@ class ScriptRewriter:
         else:
             prompt = self._rewrite_prompt(raw_text, style)
 
+        if ip_profile:
+            from src.text.ip_library import narration_guidance
+            prompt += "\\n\\n" + narration_guidance(ip_profile)
         text = self.article_generator._call_api(
             messages=[{"role": "user", "content": prompt}],
             max_tokens=4096,
