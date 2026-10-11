@@ -19,7 +19,15 @@ class WanVideoError(RuntimeError):
 
 class WanImageToVideo:
     def __init__(self, api_key=None, base_url=None, model=None, session=None):
-        self.api_key = api_key or os.environ.get("DASHSCOPE_API_KEY", "")
+        from src.config import Config
+        configured = Config.load_model_config()
+        llm = configured.get("llm") or {}
+        image = configured.get("image") or {}
+        self.api_key = (
+            api_key or os.environ.get("DASHSCOPE_API_KEY")
+            or os.environ.get("WAN_IMAGE_API_KEY")
+            or image.get("api_key") or llm.get("api_key") or ""
+        )
         # A Beijing workspace provides OpenAI-compatible chat at
         # /compatible-mode/v1 and Wan's async API at /api/v1.
         # Explicit DASHSCOPE_BASE_URL wins over the chat endpoint.
@@ -27,6 +35,8 @@ class WanImageToVideo:
             base_url
             or os.environ.get("DASHSCOPE_BASE_URL")
             or os.environ.get("LLM_BASE_URL")
+            or image.get("api_url")
+            or llm.get("base_url")
             or "https://dashscope.aliyuncs.com/api/v1"
         ).rstrip("/")
         parsed = urlparse(raw_base)
