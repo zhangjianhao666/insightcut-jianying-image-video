@@ -23,6 +23,8 @@ class WanImageToVideo:
         self.base_url = (base_url or os.environ.get(
             "DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/api/v1"
         )).rstrip("/")
+        if self.base_url == "https://dashscope.aliyuncs.com":
+            self.base_url += "/api/v1"
         self.model = model or os.environ.get("WAN_I2V_MODEL", "wan2.6-i2v-flash")
         self.session = session or requests.Session()
         if not self.api_key:
@@ -52,8 +54,8 @@ class WanImageToVideo:
     def submit(self, image_path, prompt, duration=5):
         if not str(prompt).strip():
             raise WanVideoError("视频动作提示词不能为空")
-        if duration not in (5, 10, 15):
-            raise WanVideoError("万相 2.6 请使用 5、10 或 15 秒时长")
+        if not isinstance(duration, int) or not 2 <= duration <= 15:
+            raise WanVideoError("万相 2.6 只支持 2 至 15 秒整数时长")
         payload = {
             "model": self.model,
             "input": {"prompt": str(prompt).strip(), "img_url": self._data_url(image_path)},
