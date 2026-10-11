@@ -415,6 +415,7 @@ def _file_signature(raw_path: Optional[str]) -> dict:
 
 def _media_fingerprint(task, segments: List[dict]) -> str:
     from src.export.ffmpeg_exporter import FFmpegExporter
+    from src.media.shot_video_jobs import matching_video_path
 
     task_row = mysql_client.get_task(getattr(task, "task_id", "")) or {}
     payload = {
@@ -437,6 +438,7 @@ def _media_fingerprint(task, segments: List[dict]) -> str:
                 "image_status": seg.get("image_status") or "",
                 "audio_status": seg.get("audio_status") or "",
                 "image": _file_signature(seg.get("image_path")),
+                "video": _file_signature(matching_video_path(task.task_id, seg)),
                 "audio": _file_signature(seg.get("audio_path")),
                 "audio_voice_type": seg.get("audio_voice_type"),
                 "audio_tts_options_json": seg.get("audio_tts_options_json"),
@@ -1500,7 +1502,9 @@ def _export_mp4(
         source = "cached"
     else:
         segment_texts = [seg.get("text") or "" for seg in segments]
+        from src.media.shot_video_jobs import matching_video_path
         resolved_images = [_workspace_resolve_file(seg.get("image_path")) for seg in segments]
+        resolved_media = [(matching_video_path(task.task_id, seg) or str(path)) if path else None for seg, path in zip(segments, resolved_images)]
         resolved_audio = [_workspace_resolve_file(seg.get("audio_path")) for seg in segments]
         if any(path is None for path in resolved_images):
             raise RuntimeError("分镜图片文件不存在，无法导出 MP4")
@@ -1514,7 +1518,7 @@ def _export_mp4(
                 subtitle_options=_task_subtitle_options(mysql_client.get_task(task.task_id)),
             ).export(
                 segments=segment_texts,
-                media_paths=[str(path) for path in resolved_images],
+                media_paths=resolved_media,
                 voiceover_files=[str(path) if path else None for path in resolved_audio],
                 output_path=str(render_path),
                 animation_seed=_task_animation_seed(task.task_id),
@@ -3214,7 +3218,10 @@ def _workspace_segment_payload(
         task_voice_type=task_voice_type,
         task_options=task_tts_options,
     )
+    from src.media.shot_video_jobs import status as shot_video_status
+    video_state = shot_video_status(segment.get("task_id"), int(segment.get("segment_index") or 0), segment.get("image_path"))
     payload = {
+        "video_status": video_state.get("status", "not_generated"),
         "id": segment.get("id"),
         "task_id": segment.get("task_id"),
         "segment_index": segment.get("segment_index"),
@@ -4380,7 +4387,8 @@ def _render_legacy_preview(task_id, segment_index, job_id):
         mode = "segment"
 
     segment_texts = [seg.get("text") or "" for seg in selected]
-    media_paths = [seg.get("image_path") for seg in selected]
+    from src.media.shot_video_jobs import matching_video_path
+    media_paths = [matching_video_path(task_id, seg) or seg.get("image_path") for seg in selected]
     voiceover_files = [seg.get("audio_path") for seg in selected]
 
     missing = [path for path in media_paths if not path or not Path(path).exists()]
