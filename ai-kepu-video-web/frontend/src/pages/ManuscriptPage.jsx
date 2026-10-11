@@ -377,10 +377,10 @@ export function ManuscriptPage() {
             <label className="field-label">
               <span>配音方式</span>
               <select aria-label="配音方式" value={draft.silent_video ? 'silent' : 'narration'} onChange={event => patchDraft({ silent_video: event.target.value === 'silent' })}>
-                <option value="narration">标准配音（需要豆包或 MiMo TTS 凭证）</option>
-                <option value="silent">无旁白（本地静音，先完成画面闭环）</option>
+                <option value="narration">旧版：图片 + 配音成片（需要 TTS 凭证）</option>
+                <option value="silent">推荐：AI 视频优先（逐镜头图生视频 → 拼接）</option>
               </select>
-              <small>无旁白模式不会调用 TTS 服务，但仍会生成静音时间轴以便 FFmpeg 导出。将来可以在工作台切回正常音色。</small>
+              <small>AI 视频优先不调用 TTS 服务。后端先生成首帧，再将全部分镜生成真正的动态视频；只有全部动态镜头就绪才拼接最终 MP4。</small>
             </label>
           </section>
 
