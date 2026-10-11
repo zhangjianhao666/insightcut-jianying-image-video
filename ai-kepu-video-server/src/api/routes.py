@@ -3413,6 +3413,7 @@ def _get_task_workspace_sync(task_id, request):
         "summary": task_row.get("summary") or "",
         "text_style": parts[0] if parts else "知识科普",
         "visual_style": parts[1] if len(parts) > 1 else "电影质感",
+        "custom_visual_style": parts[2] if len(parts) > 2 else "",
         "ratio": normalize_ratio(task_row.get("ratio") or "16:9"),
         "voice_type": task_row.get("voice_type") or "",
         "tts_options": parsed_options,
