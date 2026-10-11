@@ -123,45 +123,44 @@ class ImagePromptAgent:
     def __init__(self, article_generator: Optional[ArticleGenerator] = None):
         self.article_generator = article_generator or ArticleGenerator()
 
-    def generate_prompt(self, segment_text: str, summary: str, style: str, aspect_ratio: str = None) -> str:
-        """
-        输入单段文案、全文总结、画面风格和画面比例，输出不超过 30 个英文单词的图片 prompt。
+    def generate_prompt(
+        self, segment_text: str, summary: str, style: str,
+        aspect_ratio: str = None, visual_bible: dict = None,
+        previous_segment: str = "", next_segment: str = "",
+    ) -> str:
+        """Use full-video art direction and narrative neighbors as context."""
+        bible_text = json.dumps(visual_bible or {}, ensure_ascii=False)[:1100]
+        user_prompt = f"""You are the cinematographer of one continuous educational video.
+Create one English image-generation prompt for the CURRENT narration shot.
 
-        Args:
-            segment_text: 当前段落文案
-            summary: 全文总结
-            style: 视觉风格
-            aspect_ratio: 画面比例，如 "16:9" (横屏), "9:16" (竖屏), "1:1" (方形)
-        """
-        aspect_ratio_line = f"\nAspect ratio: {aspect_ratio}" if aspect_ratio else ""
+Full video summary (story context, not all to be drawn):
+{summary[:550]}
 
-        user_prompt = f"""You are a professional AI image prompt writer.
+Shared visual bible (MUST preserve identities, costumes, colors, sets):
+{bible_text}
 
-Create one concise English image prompt for the current narration segment.
+Previous narration: {previous_segment[:160]}
+CURRENT narration: {segment_text[:300]}
+Next narration: {next_segment[:160]}
 
-Full video summary:
-{summary}
-
-Current narration segment:
-{segment_text}
-
-Visual style constraint:
-{style}{aspect_ratio_line}
+Visual style: {style[:250]}
+Aspect ratio: {aspect_ratio or "16:9"}
 
 Requirements:
-- English only
-- 30 words or fewer
-- Describe visible scene, subject, action, setting, mood, and composition
-- Match the composition to the specified aspect ratio
-- No numbering, no explanation, no quotes
-- Do not include text overlays or subtitles"""
+- Describe actual visible subjects, environment, shot size, composition and lighting.
+- Use 35-75 English words, one coherent shot, no explanatory commentary.
+- Use the SAME recurring character descriptions and costume across scenes.
+- Keep the shot distinct from adjacent shots; vary wide/medium/close framing.
+- No overlay text, typography, captions, logos, watermarks or pseudo-writing.
+- Maintain continuity with previous and following shots.
+Return only the English visual prompt."""
 
-        text = self.article_generator._call_api(
+        result = self.article_generator._call_api(
             messages=[{"role": "user", "content": user_prompt}],
-            max_tokens=256,
+            max_tokens=320,
         )
-        prompt = self._clean_prompt(text)
-        logger.info(f"图片 prompt 生成完成: {prompt}")
+        prompt = self._clean_prompt(result)
+        logger.info("当前分镜画面提示词规划完成")
         return prompt
 
     def _clean_prompt(self, text: str) -> str:
@@ -171,8 +170,8 @@ Requirements:
         prompt = re.sub(r"^\s*[-*\d.)]+\s*", "", prompt).strip()
         prompt = prompt.strip("\"'“”‘’")
         words = prompt.split()
-        if len(words) > 30:
-            prompt = " ".join(words[:30])
+        if len(words) > 85:
+            prompt = " ".join(words[:85])
         if not prompt:
             prompt = "cinematic educational scene, clear subject, natural lighting, detailed composition"
         return prompt
