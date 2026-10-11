@@ -17,6 +17,30 @@ DASHSCOPE_BASE_URL=https://dashscope.aliyuncs.com/api/v1
 WAN_I2V_MODEL=wan2.6-i2v-flash
 ```
 
+## 使用现有百炼业务空间 Key（先验证权限）
+
+如果你得到的是 `https://YOUR_WORKSPACE.cn-beijing.maas.aliyuncs.com/compatible-mode/v1`，这是 **LLM OpenAI 兼容端点**；万相视频使用 **同一个业务空间域名的 `/api/v1` 接口**，但是否能使用相同 Key 取决于当前工作空间是否授权视频模型。
+
+从本机后端目录执行（脚本缺省只做 GET 查询，不会生成文字、图片或视频）：
+
+```bash
+python scripts/probe_bailian.py \
+  --base-url "https://YOUR_WORKSPACE.cn-beijing.maas.aliyuncs.com/compatible-mode/v1" \
+  --permissions
+```
+
+该脚本在终端安全地要求输入 API Key，不需要粘贴到命令行或保存到代码。只有明确增加 `--chat` 才发出 **一次** 最多 24 输出 token 的小额文本生成请求：
+
+```bash
+python scripts/probe_bailian.py \
+  --base-url "https://YOUR_WORKSPACE.cn-beijing.maas.aliyuncs.com/compatible-mode/v1" \
+  --model qwen3.8-flash --chat
+```
+
+不要把临时 Key 写进 GitHub Issues/PR、控制台截图、shell 命令参数或聊天记录。此前分享过的 Key 应在验证完成后撤销轮换。
+
+InsightCut 原有生图和 TTS 使用独立 Provider（Agnes 与豆包/MiMo）；仅配置百炼的 **LLM** Key 不会自动打通这些服务。要完成「文字→配音→图片→动态视频→MP4」真实闭环，还必须配置有权限的图片和 TTS Provider；建议先验证模型列表、权限与账单再选择接入方式。
+
 ## 流程
 
 1. 在 InsightCut 中正常生成分镜首帧、配音。
