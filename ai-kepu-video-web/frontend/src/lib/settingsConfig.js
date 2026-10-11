@@ -1,5 +1,10 @@
 import { isLlmProviderReady } from './llmProviderCatalog.js'
 
+export const WAN_IMAGE_PRESET = {
+  model: 'wan2.7-image',
+  size: 'auto',
+}
+
 export const AGNES_PRESET = {
   api_url: 'https://apihub.agnes-ai.com/v1/images/generations',
   model: 'agnes-image-2.1-flash',
@@ -92,6 +97,7 @@ export function normalizeConfig(config = {}) {
     },
     image: {
       ...(source.image || {}),
+      provider: source.image?.provider === 'wan' ? 'wan' : 'agnes',
       api_url: source.image?.api_url || '',
       api_key: source.image?.api_key || '',
       model: source.image?.model || '',
@@ -133,8 +139,26 @@ export function restoreAgnesPreset(config) {
     image: {
       ...config.image,
       ...AGNES_PRESET,
+      provider: 'agnes',
     },
   }
+}
+
+export function chooseImageProvider(config, provider) {
+  if (provider === 'wan') {
+    return {
+      ...config,
+      image: {
+        ...config.image,
+        provider: 'wan',
+        api_url: config.llm?.base_url || 'https://dashscope.aliyuncs.com/api/v1',
+        api_key: config.llm?.api_key || '',
+        model: WAN_IMAGE_PRESET.model,
+        size: WAN_IMAGE_PRESET.size,
+      },
+    }
+  }
+  return restoreAgnesPreset(config)
 }
 
 export function restoreMimoTechnicalPreset(config) {
