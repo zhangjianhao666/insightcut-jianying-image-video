@@ -1,5 +1,18 @@
 const STORAGE_KEY = 'insightcut:project-drafts'
 
+export const CUSTOM_VISUAL_STYLE = '自定义'
+export const CUSTOM_STYLE_EXAMPLE = '美式成人情景喜剧二维动画风格，粗黑描边，扁平明亮配色，圆形大眼和简洁五官，轻度夸张的稳定人物比例，简约郊区背景；保持原创角色的五官、发型、服装和配色在各分镜完全一致，不要字幕、文字和水印。'
+
+/** The backend already interprets style as text|visual|visual-prompt-suffix. */
+export function buildVideoStyle(draft) {
+  const textStyle = String(draft?.text_style || '知识科普').replaceAll('|', '｜').trim()
+  const visualStyle = String(draft?.visual_style || '电影质感').replaceAll('|', '｜').trim()
+  if (visualStyle !== CUSTOM_VISUAL_STYLE) return `${textStyle}|${visualStyle}`
+  const custom = String(draft?.custom_visual_style || '').replaceAll('|', '｜').trim().slice(0, 500)
+  if (!custom) throw new Error('请先填写自定义画面风格描述')
+  return `${textStyle}|${CUSTOM_VISUAL_STYLE}|${custom}`
+}
+
 export const visualStyles = [
   { value: '电影质感', label: '电影质感', description: '真实光影与镜头叙事', image: '/styles/电影质感.jpg' },
   { value: '吉卜力', label: '吉卜力', description: '温暖手绘与自然色彩', image: '/styles/吉卜力.webp' },
@@ -39,6 +52,7 @@ export function createDraft(overrides = {}) {
     length: 300,
     ratio: '16:9',
     visual_style: '吉卜力',
+    custom_visual_style: '',
     text_style: '知识科普',
     voice_type: '',
     voice_name: '',
@@ -108,7 +122,7 @@ function normalizeVisualStyle(style) {
     '写实风格': '电影质感',
   }
   const value = legacyMap[style] || style
-  return visualStyles.some((item) => item.value === value) ? value : '电影质感'
+  return value === CUSTOM_VISUAL_STYLE || visualStyles.some((item) => item.value === value) ? value : '电影质感'
 }
 
 export function updateDraft(draftId, patch) {
