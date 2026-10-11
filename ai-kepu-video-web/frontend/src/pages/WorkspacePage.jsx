@@ -1224,6 +1224,11 @@ export function WorkspacePage() {
         </div>
 
         <dl className="workspace-metrics">
+          {workspace.ip_profile ? <div><dt>系列 IP</dt>
+            <dd title={workspace.ip_profile.voice_style || workspace.ip_profile.persona || ''}>
+              {workspace.ip_profile.name} · v{workspace.ip_profile.version}
+            </dd>
+          </div> : null}
           <div><dt>实际分镜</dt><dd>{workspace.segments_count} 段</dd></div>
           <div><dt>{workspace.duration_is_estimate ? '预计时长' : '真实时长'}</dt><dd>{secondsToLabel(workspace.estimated_duration)}</dd></div>
           <div><dt>素材耗时</dt><dd>{formatEstimate(workspace.generation_estimate)}</dd></div>
