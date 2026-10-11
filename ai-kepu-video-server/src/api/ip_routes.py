@@ -15,6 +15,7 @@ class IpProfilePayload(BaseModel):
     name: str = Field(..., min_length=1, max_length=80)
     persona: str = Field(default="", max_length=900)
     voice_style: str = Field(default="", max_length=650)
+    voice_type: str = Field(default="", max_length=120)
     visual_identity: str = Field(default="", max_length=1000)
     outfit: str = Field(default="", max_length=450)
     world: str = Field(default="", max_length=600)
