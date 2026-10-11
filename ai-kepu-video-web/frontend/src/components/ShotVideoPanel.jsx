@@ -67,7 +67,7 @@ export function ShotVideoPanel({ taskId, segment, onReady }) {
   return <section className="workspace-inspector-section" aria-label="AI 动态镜头">
     <div className="workspace-setting-heading"><strong>AI 动态镜头（万相）</strong><span>按镜头付费，未生成时保持原有图片动效</span></div>
     <label className="workspace-inspector-field"><span>镜头动作提示词</span>
-      <textarea value={prompt} maxLength={2000} onChange={e => setPrompt(e.target.value)} placeholder="例如：镜头缓慢推进，人物自然转头，背景轻微晃动" />
+      <textarea value={prompt} maxLength={1500} onChange={e => setPrompt(e.target.value)} placeholder="例如：镜头缓慢推进，人物自然转头，背景轻微晃动" />
     </label>
     <p>状态：{({
       not_generated: '尚未生成', running: '生成中', interrupted: '任务中断，可恢复查询',
