@@ -105,6 +105,7 @@ export function normalizeConfig(config = {}) {
     },
     tts: {
       ...(source.tts || {}),
+      allow_silent_mode: source.tts?.allow_silent_mode === true,
       provider,
       enabled_providers: enabledProviders,
       preview_text: '欢迎来到 InsightCut，让我们一起把灵感变成精彩视频。',
@@ -216,6 +217,11 @@ export function validateConfig(config, llmProvider = null) {
   if (!config.image.api_url.trim()) return '请输入生图 API URL'
   if (!config.image.api_key.trim()) return '请输入生图 API Key'
   if (!config.image.model.trim()) return '请输入生图模型'
+
+  // The settings page can be saved without paid TTS credentials when the
+  // creator explicitly enables no-narration. Real TTS projects still use
+  // server-side per-voice readiness validation before generation.
+  if (config.tts.allow_silent_mode) return ''
 
   const validateMimo = () => {
     if (!config.tts.mimo.base_url.trim()) return '请输入小米 MiMo Base URL'
