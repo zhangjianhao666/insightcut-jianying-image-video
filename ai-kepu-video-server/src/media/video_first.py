@@ -134,6 +134,18 @@ def _current(task_id, segments, ratio=None):
         valid = False
     if len(segments) != len(expected):
         valid = False
+    if state == "completed" and record.get("clip_signatures"):
+        current_clips = []
+        for shot in expected:
+            clip = shot_video_jobs.matching_video_path(task_id, {
+                "segment_index": shot["index"], "image_path": shot["image"],
+            })
+            try:
+                current_clips.append(shot_video_jobs._identity(clip) if clip else None)
+            except OSError:
+                current_clips.append(None)
+        if current_clips != record["clip_signatures"]:
+            valid = False
     if not valid:
         state = "stale"
     elif state in {"generating", "rendering"} and task_id not in _ACTIVE:
@@ -305,13 +317,16 @@ def start(task_id, segments, *, ratio="16:9", duration=5,
             with _LOCK:
                 record["status"] = "rendering"
                 _write(task_id, record)
+            clip_signatures = [shot_video_jobs._identity(path) for path in paths]
             final = render_clips(paths, record["output_path"], ratio=ratio)
-            if any(shot_video_jobs._identity(shot["image"]) != shot["signature"]
-                   for shot in shots):
+            if ([shot_video_jobs._identity(path) for path in paths] != clip_signatures
+                    or any(shot_video_jobs._identity(shot["image"]) != shot["signature"]
+                   for shot in shots)):
                 Path(final).unlink(missing_ok=True)
                 raise VideoFirstError("渲染期间首帧已变化，请重新生成")
             with _LOCK:
                 record["status"] = "completed"
+                record["clip_signatures"] = clip_signatures
                 record["error"] = None
                 _write(task_id, record)
         except Exception as error:
