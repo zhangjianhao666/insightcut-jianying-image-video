@@ -1174,7 +1174,7 @@ export function WorkspacePage() {
   return <main className={`production-workspace${settingsOpen ? ' is-settings-open' : ''}`} data-mobile-pane={mobilePane}>
     {workspace.input_mode_required && <section className="batch-alert" role="alert"><p>这个历史任务没有记录输入模式。原始输入：{workspace.original_input}。请选择后再继续。</p>{[['theme','这是主题'],['script','这是完整文稿']].map(([mode,label])=><button key={mode} onClick={async()=>{try{await resolveInputMode(taskId,mode);await resumeTask(taskId);workspacePolling.refresh()}catch(e){toast.error(errorToastMessage(e))}}}>{label}</button>)}</section>}
     <WorkspaceStageNavigator journey={journey} onHelp={() => setTourOpen(true)} onNavigate={navigateJourneyStep} />
-    <VideoFirstPanel taskId={taskId} segments={segments} ratio={workspace.ratio} production={workspace.production} />
+
     <div className="workspace-polling-notices">
       {workspacePolling.error ? <PollingFailureNotice
         title="工作台连接已中断"
@@ -1201,6 +1201,7 @@ export function WorkspacePage() {
           <span className={`workspace-stage-dot is-${stage.tone}`}>{stage.title}</span>
         </header>
 
+        <VideoFirstPanel taskId={taskId} segments={segments} ratio={workspace.ratio} production={workspace.production} />
         <section className={`workspace-canvas ${ratioClassName(workspace.ratio)}`}>
           {previewMode === 'full' && isRenderingFullVideo
             ? <div className="workspace-full-video-rendering" role="status" aria-live="polite">
