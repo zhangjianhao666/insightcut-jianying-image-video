@@ -96,7 +96,7 @@ def start(task_id, segment_index, image_path, prompt, *, duration=5, force_new=F
     image_path = str(Path(image_path).resolve())
     signature = _identity(image_path)
     if not str(prompt).strip() or len(str(prompt)) > 1500:
-        raise ValueError("请输入不超过 2000 字的视频动作提示词")
+        raise ValueError("请输入不超过 1500 字的视频动作提示词")
     if duration not in (5, 10, 15):
         raise ValueError("生成时长应为 5、10 或 15 秒")
     key = (str(task_id), segment_index)
