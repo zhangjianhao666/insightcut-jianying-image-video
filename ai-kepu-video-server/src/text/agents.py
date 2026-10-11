@@ -37,7 +37,7 @@ class ScriptRewriter:
 
         if ip_profile:
             from src.text.ip_library import narration_guidance
-            prompt += "\\n\\n" + narration_guidance(ip_profile)
+            prompt += "\n\n" + narration_guidance(ip_profile)
         text = self.article_generator._call_api(
             messages=[{"role": "user", "content": prompt}],
             max_tokens=4096,
