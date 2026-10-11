@@ -1334,6 +1334,7 @@ export function WorkspacePage() {
         normalizeRuntime={normalizeRuntimeConfig}
         onSaveRuntime={saveRuntimeConfig}
         onOpenApi={() => navigate(`/workspace/${taskId}/settings`)}
+        onVideoReady={workspacePolling.refresh}
         onAssetSelected={({ assetType }) => {
           toast.success(assetType === 'audio' ? '已切换为这个配音版本' : '已切换为这个图片版本')
           workspacePolling.refresh()
