@@ -70,6 +70,7 @@ class ImageGenerator:
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.image_config = Config.image_config()
+        self.provider = str(self.image_config.get("provider") or "agnes").lower()
         self.api_url = self.image_config.get("api_url") or Config.SEEDREAM_API_URL
         self.api_key = self.image_config.get("api_key") or Config.SEEDREAM_API_KEY
         self.model = self.image_config.get("model") or Config.SEEDREAM_MODEL
@@ -112,6 +113,31 @@ class ImageGenerator:
 
         if not self.api_key:
             raise ValueError("图像生成 API Key 未配置")
+
+        if self.provider == "wan":
+            # Wan uses a different response schema than OpenAI images/generations.
+            # Keep the existing GeneratedImagePath contract and all downstream
+            # asset versioning intact.
+            from src.media.wan_image import WanImageGenerator, image_size
+            size = image_size(width, height, self.size)
+            try:
+                self._wait_for_rate_limit()
+                client = WanImageGenerator(
+                    api_key=self.api_key, base_url=self.api_url, model=self.model
+                )
+                output_path = self.output_dir / f"{output_stem}.png"
+                path = client.generate(full_prompt, size, str(output_path))
+            except Exception as error:
+                safe = classify_exception(error, provider="wan")
+                if safe.code is ErrorCode.UNKNOWN:
+                    safe = make_safe_error(ErrorCode.PROVIDER_ERROR, provider="wan")
+                raise ClassifiedError(safe) from None
+            return GeneratedImagePath(
+                str(path),
+                requested_prompt=full_prompt,
+                submitted_prompt=full_prompt,
+                fallback_used=False,
+            )
 
         # 尺寸映射（可配置，auto 时按宽高比选择常见兼容规格）
         size = self._pick_size(width, height)
