@@ -43,7 +43,7 @@ def test_silent_voice_in_public_catalog(monkeypatch):
         def list(self, **kwargs):
             return []
     monkeypatch.setattr(routes, "_voice_clone_store", lambda: EmptyClones())
-    voices = asyncio.run(routes.get_voices())
+    voices = asyncio.run(routes.get_voices(provider=None, include_disabled=True))
     voice = next(item for item in voices if item["id"] == "silent:default")
     assert voice["provider"] == "silent"
     assert voice["source"] == "local"
