@@ -262,7 +262,9 @@ def start(task_id, segments, *, ratio="16:9", duration=5,
         existing = _load(task_id)
         if existing.get("fingerprint") == fingerprint and existing.get("status") == "completed":
             if Path(existing.get("output_path") or "/nonexistent").is_file():
-                return _current(task_id, segments, ratio)
+                previous = _current(task_id, segments, ratio)
+                if previous.get("status") == "completed":
+                    return previous
         record = {
             "job_id": uuid.uuid4().hex,
             "status": "generating", "fingerprint": fingerprint,
