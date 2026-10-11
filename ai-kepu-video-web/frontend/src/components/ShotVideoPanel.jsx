@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import request from '../api/request'
 import { normalizeMediaUrl } from '../utils/mediaUrl'
 
@@ -10,10 +10,12 @@ export function ShotVideoPanel({ taskId, segment, onReady }) {
   const [state, setState] = useState({ status: 'not_generated' })
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const notifiedReady = useRef(false)
   useEffect(() => {
     setPrompt(segment?.image_prompt
       ? `保持首帧画面主体与造型不变，镜头缓慢推进，环境有细微自然运动。`
       : '')
+    notifiedReady.current = false
     setState({ status: 'not_generated' })
     setError('')
   }, [taskId, index])
@@ -28,10 +30,11 @@ export function ShotVideoPanel({ taskId, segment, onReady }) {
           suppressToast: true,
         })
         if (!active) return
-        setState(old => {
-          if (old.status !== 'completed' && result.status === 'completed') onReady?.()
-          return result
-        })
+        if (result.status === 'completed' && !notifiedReady.current) {
+          notifiedReady.current = true
+          onReady?.()
+        }
+        setState(result)
       } catch {
         if (active) setError('视频状态暂时无法读取')
       }
