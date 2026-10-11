@@ -1975,7 +1975,9 @@ async def get_voices(
         }
         for voice in presets
     ]
-    if normalized_provider in {None, "silent"}:
+    if normalized_provider == "silent" or (
+        normalized_provider is None and Config.tts_config().get("allow_silent_mode")
+    ):
         result.insert(0, {
             "id": "silent:default",
             "voice_id": "default",
