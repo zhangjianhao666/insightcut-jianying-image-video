@@ -54,7 +54,7 @@ export function ShotVideoPanel({ taskId, segment, onReady }) {
       const result = await request({
         url: `${PREFIX}/tasks/${encodeURIComponent(taskId)}/segments/${index}/video`,
         method: 'post',
-        data: { prompt: prompt.trim(), duration: 5, force_new: state.status === 'completed' || state.status === 'failed' },
+        data: { prompt: prompt.trim(), duration: 5, force_new: state.status === 'completed' },
         timeout: 30000,
       })
       setState(result)
