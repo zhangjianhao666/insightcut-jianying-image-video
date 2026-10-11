@@ -126,7 +126,11 @@ class ImageGenerator:
                     api_key=self.api_key, base_url=self.api_url, model=self.model
                 )
                 output_path = self.output_dir / f"{output_stem}.png"
-                path = client.generate(full_prompt, size, str(output_path))
+                reference = getattr(self, "reference_image", None)
+                path = (
+                    client.generate(full_prompt, size, str(output_path), reference_image=reference)
+                    if reference else client.generate(full_prompt, size, str(output_path))
+                )
             except Exception as error:
                 safe = classify_exception(error, provider="wan")
                 if safe.code is ErrorCode.UNKNOWN:
