@@ -1,0 +1,52 @@
+name: Video-first checks
+
+on:
+  push:
+    branches:
+      - codex/wan-i2v-shot-closure
+  pull_request:
+    branches:
+      - master
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install FFmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: Python dependencies
+        working-directory: ai-kepu-video-server
+        run: |
+          python -m pip install -U pip
+          python -m pip install -r requirements.txt pytest
+      - name: Syntax validation
+        working-directory: ai-kepu-video-server
+        run: python -m compileall -q src api_server.py
+      - name: AI-only video smoke tests (no provider network calls)
+        working-directory: ai-kepu-video-server
+        run: python -m pytest -q tests/test_video_first.py tests/test_silent_video_mode.py tests/test_wan_i2v.py tests/test_wan_image_storyboard.py tests/test_ip_library.py
+
+  frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: ai-kepu-video-web/frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: ai-kepu-video-web/frontend/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: UI tests
+        run: npm test
+      - name: Build
+        run: npm run build
