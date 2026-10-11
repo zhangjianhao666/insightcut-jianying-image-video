@@ -18,10 +18,10 @@ from src.config import Config
 
 
 _LOCK = threading.RLock()
-_FIELDS = ("name", "persona", "voice_style", "visual_identity", "outfit",
+_FIELDS = ("name", "persona", "voice_style", "voice_type", "visual_identity", "outfit",
            "world", "art_style", "camera_style", "negative_rules")
 _MAX = {
-    "name": 80, "persona": 900, "voice_style": 650,
+    "name": 80, "persona": 900, "voice_style": 650, "voice_type": 120,
     "visual_identity": 1000, "outfit": 450, "world": 600,
     "art_style": 650, "camera_style": 400, "negative_rules": 400,
 }
