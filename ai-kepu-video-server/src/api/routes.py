@@ -161,7 +161,7 @@ def _resolve_new_task_voice(voice_type: Optional[str], *, validate=True) -> str:
             )
         )
 
-    if not validate:
+    if not validate or selection.provider == "silent":
         return selection.key
     enabled_providers = config.get("enabled_providers") or ["doubao", "mimo"]
     if selection.provider not in enabled_providers:
@@ -1721,9 +1721,11 @@ def _config_readiness(voice_type: Optional[str] = None, phase: str = "full") -> 
         ))
     tts_missing = []
     enabled_providers = tts.get("enabled_providers") or ["doubao", "mimo"]
-    if selection.provider not in enabled_providers:
+    if selection.provider != "silent" and selection.provider not in enabled_providers:
         tts_missing.append("当前配音服务商未启用")
-    if selection.provider == "mimo":
+    if selection.provider == "silent":
+        pass  # Local silent WAVs need no external credentials.
+    elif selection.provider == "mimo":
         mimo = tts.get("mimo") or {}
         for field, label in (
             ("base_url", "Base URL"),
@@ -1778,7 +1780,7 @@ def _config_readiness(voice_type: Optional[str] = None, phase: str = "full") -> 
             provider=selection.provider,
             missing=tts_missing,
             message=(
-                "当前音色所需的配音配置已齐全"
+                ("无需 TTS 密钥：使用本地无旁白模式" if selection.provider == "silent" else "当前音色所需的配音配置已齐全")
                 if tts_status == "ready"
                 else "请先补全当前音色所属服务商的配置"
             ),
