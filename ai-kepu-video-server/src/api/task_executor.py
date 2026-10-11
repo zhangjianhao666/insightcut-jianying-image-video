@@ -867,7 +867,10 @@ class TaskExecutor:
             )
             if cancellation:
                 cancellation.raise_if_cancelled()
-            prompt = str(prompt or "").strip()
+            from src.text.storyboard_director import enforce_visual_consistency
+            prompt = enforce_visual_consistency(
+                str(prompt or "").strip(), visual_plan.get("visual_bible") or {}
+            )
             if not prompt:
                 raise RuntimeError("提示词生成结果为空")
             resolved_image = _resolve_local_path(segment.get("image_path"))
@@ -1971,6 +1974,8 @@ class TaskExecutor:
                             previous_segment=pipeline.segments[i - 1] if i else "",
                             next_segment=pipeline.segments[i + 1] if i + 1 < segments_count else "",
                         )
+                    from src.text.storyboard_director import enforce_visual_consistency
+                    prompt = enforce_visual_consistency(prompt, visual_bible)
                     return {"status": "success", "prompt": prompt, "error": None}
                 except TaskCancelled:
                     raise
