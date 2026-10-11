@@ -144,7 +144,14 @@ def plan_storyboard(task_id, generator, *, script, segments, summary, style, rat
     """
     if not segments:
         return {"visual_bible": {}, "shots": {}}
-    fingerprint = _signature(script, segments, summary, style, ratio)
+    from src.text.ip_library import project_ip, visual_bible
+    ip_profile = project_ip(task_id)
+    ip_bible = visual_bible(ip_profile)
+    profile_fingerprint = (
+        str((ip_profile or {}).get("ip_id") or "")
+        + ":" + str((ip_profile or {}).get("version") or "")
+    )
+    fingerprint = _signature(script, segments, summary, style + profile_fingerprint, ratio)
     previous = load_plan(task_id)
     if previous and previous.get("fingerprint") == fingerprint:
         return previous
@@ -168,9 +175,17 @@ def plan_storyboard(task_id, generator, *, script, segments, summary, style, rat
     )
     if not compact:
         instructions += "当前镜头太多，本次只创建全片 visual_bible；shots 返回空数组。"
+    ip_prompt = ""
+    if ip_profile:
+        ip_prompt = (
+            "\\n固定系列 IP（优先级高于单集发挥，不允许改变角色外观）："
+            + json.dumps(ip_profile, ensure_ascii=False)[:2000]
+            + "\\n请让这一 IP 作为本集的稳定讲述者或画面主角。"
+        )
     payload = (
-        f"{instructions}\n画风：{style[:250]}\n画幅：{ratio}\n全文总结：{summary[:650]}"
-        f"\n分镜编号与对应旁白：{json.dumps(excerpt, ensure_ascii=False)}"
+        f"{instructions}\\n画风：{style[:250]}\\n画幅：{ratio}\\n全文总结：{summary[:650]}"
+        f"\\n分镜编号与对应旁白：{json.dumps(excerpt, ensure_ascii=False)}"
+        + ip_prompt
     )
     try:
         raw = generator._call_api(
@@ -182,8 +197,14 @@ def plan_storyboard(task_id, generator, *, script, segments, summary, style, rat
         # Preserve original reliable generation path on model/JSON failure.
         log.warning("全片分镜导演规划失败；继续使用逐分镜提示词生成")
         parsed = {"visual_bible": {}, "shots": {}}
+    if ip_bible:
+        # Series identity always overrides per-episode model improvisation.
+        parsed["visual_bible"] = {
+            **parsed["visual_bible"], **{k: v for k, v in ip_bible.items() if v}
+        }
     record = {
         "version": _PLAN_VERSION, "fingerprint": fingerprint,
+        "ip_id": (ip_profile or {}).get("ip_id"),
         "segments": list(segments), "visual_bible": parsed["visual_bible"],
         "shots": parsed["shots"],
     }
