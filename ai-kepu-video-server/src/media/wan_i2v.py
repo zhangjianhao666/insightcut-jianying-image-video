@@ -20,11 +20,36 @@ class WanVideoError(RuntimeError):
 class WanImageToVideo:
     def __init__(self, api_key=None, base_url=None, model=None, session=None):
         self.api_key = api_key or os.environ.get("DASHSCOPE_API_KEY", "")
-        self.base_url = (base_url or os.environ.get(
-            "DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/api/v1"
-        )).rstrip("/")
-        if self.base_url == "https://dashscope.aliyuncs.com":
-            self.base_url += "/api/v1"
+        # A Beijing workspace provides OpenAI-compatible chat at
+        # /compatible-mode/v1 and Wan's async API at /api/v1.
+        # Explicit DASHSCOPE_BASE_URL wins over the chat endpoint.
+        raw_base = (
+            base_url
+            or os.environ.get("DASHSCOPE_BASE_URL")
+            or os.environ.get("LLM_BASE_URL")
+            or "https://dashscope.aliyuncs.com/api/v1"
+        ).rstrip("/")
+        parsed = urlparse(raw_base)
+        if (
+            parsed.scheme != "https"
+            or not parsed.hostname
+            or not (
+                parsed.hostname == "dashscope.aliyuncs.com"
+                or parsed.hostname.endswith(".maas.aliyuncs.com")
+                or parsed.hostname == "dashscope-intl.aliyuncs.com"
+                or parsed.hostname == "dashscope-us.aliyuncs.com"
+            )
+            or parsed.username or parsed.password or parsed.query or parsed.fragment
+        ):
+            raise WanVideoError("请配置官方百炼 HTTPS 服务地址")
+        path = parsed.path
+        if path == "/compatible-mode/v1":
+            path = "/api/v1"
+        elif path in ("", "/"):
+            path = "/api/v1"
+        elif path != "/api/v1":
+            raise WanVideoError("万相 API 必须使用 /api/v1 路径")
+        self.base_url = f"https://{parsed.netloc}{path}"
         self.model = model or os.environ.get("WAN_I2V_MODEL", "wan2.6-i2v-flash")
         self.session = session or requests.Session()
         if not self.api_key:
