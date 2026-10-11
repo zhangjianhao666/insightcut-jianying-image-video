@@ -17,6 +17,30 @@ log = logging.getLogger(__name__)
 _PLAN_VERSION = 1
 
 
+def enforce_visual_consistency(prompt: str, bible: dict) -> str:
+    """Embed immutable art direction into every actual text-to-image request.
+
+    A shared bible stored separately cannot affect the image model unless it
+    is included in the prompt sent to that model.
+    """
+    if not isinstance(bible, dict) or not any(bible.values()):
+        return str(prompt or "").strip()
+    locks = [
+        ("Recurring character identity and clothing", "character_lock"),
+        ("Recurring environment and props", "environment_lock"),
+        ("Art direction and color palette", "art_direction"),
+        ("Avoid", "negative_rules"),
+    ]
+    details = [
+        f"{label}: {str(bible[key])[:250]}"
+        for label, key in locks if bible.get(key)
+    ]
+    full = str(prompt or "").strip()[:3000]
+    if details:
+        full += ". PROJECT-WIDE VISUAL CONTINUITY: " + "; ".join(details)
+    return full[:4400]
+
+
 def _location(task_id):
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", str(task_id)):
         raise ValueError("不合法的任务 ID")
