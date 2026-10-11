@@ -168,7 +168,7 @@ export function ManuscriptPage() {
         style: `${prepared.text_style || '知识科普'}|${prepared.visual_style || '吉卜力'}`,
         ratio: prepared.ratio || '16:9',
         length: inputMode === 'theme' ? normalizeLength(prepared.length) : 0,
-        voice_type: prepared.template_voice_type || voiceType || undefined,
+        voice_type: prepared.template_voice_type || prepared.ip_voice_type || voiceType || undefined,
         tts_options: prepared.template_tts_options || readLastTtsOptions(),
         execution_mode: 'review_first',
         script_policy: inputMode === 'script' ? 'verbatim' : 'rewrite',
@@ -207,7 +207,7 @@ export function ManuscriptPage() {
     persistDraft(prepared, setDraft, setSaveState, setSavedAt)
     setStarting(true)
     try {
-      const readiness = await getConfigReadiness({ voiceType: prepared.template_voice_type || voiceType, phase: 'planning' })
+      const readiness = await getConfigReadiness({ voiceType: prepared.template_voice_type || prepared.ip_voice_type || voiceType, phase: 'planning' })
       if (readiness?.status === 'not_ready' || readiness?.status === 'unknown') {
         setReadinessPrompt({ ...readiness, pendingLaunch })
         return
@@ -339,7 +339,7 @@ export function ManuscriptPage() {
 
           <section className="manuscript-settings-section" aria-labelledby="visual-preset-heading">
             <header className="manuscript-settings-heading"><span>02</span><h3 id="visual-preset-heading">生产预设</h3></header>
-            <IpProfilePicker value={draft.ip_profile_id || ''} onChange={id => patchDraft({ ip_profile_id: id })} />
+            <IpProfilePicker value={draft.ip_profile_id || ''} onChange={(id, profile) => patchDraft({ ip_profile_id: id, ip_voice_type: profile?.voice_type || '' })} />
             <fieldset className="control-group"><legend>画面风格</legend><div className="style-thumbnail-grid">{visualStyles.map(style => <VisualStyleCard key={style.value} style={style} selected={draft.visual_style === style.value} onSelect={value => patchDraft({ visual_style: value })} />)}</div></fieldset>
             <fieldset className="control-group"><legend>视频比例</legend><div className="segmented-control">{ratioOptions.map(ratio => <button type="button" key={ratio} className={draft.ratio === ratio ? 'is-selected' : ''} onClick={() => patchDraft({ ratio })}>{ratio}</button>)}</div></fieldset>
             <label className="field-label">创作风格<select value={draft.text_style || '知识科普'} onChange={event => patchDraft({ text_style: event.target.value })}>{textStyles.map(style => <option key={style}>{style}</option>)}</select></label>
