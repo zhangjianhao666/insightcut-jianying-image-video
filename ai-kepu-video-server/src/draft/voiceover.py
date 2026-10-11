@@ -5,6 +5,8 @@
 
 import base64
 import logging
+import os
+import wave
 import time
 import uuid
 from pathlib import Path
@@ -101,6 +103,10 @@ class VoiceOverGenerator:
             speed_level: 统一五档语速
             style_prompt: MiMo 风格指令
         """
+        if voice_type == "silent:default":
+            # Create real local WAV assets so duration, FFmpeg and legacy
+            # preview/export paths work without any TTS provider or key.
+            return self._generate_silence(text, filename)
         if voice_type:
             raw_voice = voice_type
         elif self.provider == "mimo":
@@ -144,6 +150,26 @@ class VoiceOverGenerator:
             safe = "".join(c for c in text[:10] if c.isalnum() or c in "_ ")
             filename = safe.strip() or "voice"
         return self.output_dir / f"{filename}.wav"
+
+    def _generate_silence(self, text: str, filename: str = None) -> str:
+        """No model request: 24kHz mono PCM silence tracks narration timing."""
+        path = self._output_path(text, filename)
+        # Estimated conversational delivery, aligned to current storyboard
+        # duration estimation. This is explicitly NOT timed speech.
+        count = len("".join(str(text or "").split()))
+        seconds = max(3.0, min(15.0, count / 4.2 + 0.5))
+        samples = round(seconds * 24000)
+        temporary = path.with_suffix(".tmp")
+        try:
+            with wave.open(str(temporary), "wb") as handle:
+                handle.setnchannels(1)
+                handle.setsampwidth(2)
+                handle.setframerate(24000)
+                handle.writeframes(bytes(samples * 2))
+            os.replace(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
+        return str(path)
 
     def _generate_doubao(
         self,
