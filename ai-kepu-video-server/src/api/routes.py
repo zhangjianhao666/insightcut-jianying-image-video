@@ -3385,7 +3385,18 @@ def _get_task_workspace_sync(task_id, request):
         task_row.get("error_meta"),
     )
     script_text, script_source = _workspace_script(task_row, segments)
+    from src.text.ip_library import project_ip
+    bound_ip = project_ip(task_id)
+    public_ip = ({
+        "ip_id": bound_ip.get("ip_id"),
+        "name": bound_ip.get("name"),
+        "version": bound_ip.get("version"),
+        "persona": bound_ip.get("persona"),
+        "voice_style": bound_ip.get("voice_style"),
+        "has_reference": bool(bound_ip.get("reference_image")),
+    } if bound_ip else None)
     return {
+        "ip_profile": public_ip,
         "task_id": task_id,
         "name": task_row.get("name") or task_row.get("theme") or "未命名项目",
         "status": task_row.get("status"),
