@@ -1693,6 +1693,7 @@ def _config_readiness(voice_type: Optional[str] = None, phase: str = "full") -> 
         llm_message = "生文和提示词配置已齐全"
 
     image = config.get("image") or {}
+    image_provider = "wan" if image.get("provider") == "wan" else "agnes"
     image_missing = [
         label for field, label in (
             ("api_url", "API URL"),
@@ -1762,12 +1763,12 @@ def _config_readiness(voice_type: Optional[str] = None, phase: str = "full") -> 
             "image",
             "图片生成",
             image_status,
-            provider="agnes",
+            provider=image_provider,
             missing=image_missing,
             message=(
                 "生图配置已齐全"
                 if image_status == "ready"
-                else "请先补全 Agnes 生图配置"
+                else f"请先补全 {image_provider} 生图配置"
             ),
         ),
         _readiness_item(
@@ -3220,7 +3221,15 @@ def _workspace_segment_payload(
     )
     from src.media.shot_video_jobs import status as shot_video_status
     video_state = shot_video_status(segment.get("task_id"), int(segment.get("segment_index") or 0), segment.get("image_path"))
+    from src.text.storyboard_director import lookup_shot
+    direction = lookup_shot(
+        segment.get("task_id"),
+        int(segment.get("segment_index") or 0),
+        segment.get("text") or "",
+    )
     payload = {
+        "motion_prompt": direction.get("motion_prompt") or "",
+        "shot_type": direction.get("shot_type") or "",
         "video_status": video_state.get("status", "not_generated"),
         "id": segment.get("id"),
         "task_id": segment.get("task_id"),
