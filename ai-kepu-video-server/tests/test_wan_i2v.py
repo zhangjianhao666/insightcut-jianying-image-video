@@ -124,7 +124,7 @@ def test_ffmpeg_uses_dynamic_video_and_drops_model_audio(monkeypatch, tmp_path):
         wav.setnchannels(1)
         wav.setsampwidth(2)
         wav.setframerate(24000)
-        wav.writeframes(b"\\x00\\x00" * 24000)
+        wav.writeframes(bytes(48000))
     exporter = FFmpegExporter(canvas={"width": 640, "height": 360, "fps": 24})
     commands = []
     def fake_run(cmd, **kwargs):
