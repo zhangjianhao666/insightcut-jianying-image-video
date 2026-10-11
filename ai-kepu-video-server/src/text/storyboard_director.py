@@ -181,7 +181,7 @@ def plan_storyboard(task_id, generator, *, script, segments, summary, style, rat
             "\\n固定系列 IP（优先级高于单集发挥，不允许改变角色外观）："
             + json.dumps({
                 key: ip_profile.get(key) for key in (
-                    "name", "persona", "voice_style", "visual_identity", "outfit",
+                    "name", "persona", "voice_style", "catchphrase", "canon", "visual_identity", "outfit",
                     "world", "art_style", "camera_style", "negative_rules"
                 )
             }, ensure_ascii=False)[:2000]
