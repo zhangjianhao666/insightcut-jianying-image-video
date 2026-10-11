@@ -24,6 +24,7 @@ from src.utils.rendering import normalize_ratio
 
 MAX_SHOTS = 12
 _ACTIVE = set()
+_STOP = set()
 _LOCK = threading.RLock()
 DEFAULT_MOTION = "保持首帧人物与服装、画面布局一致；人物有轻微自然动作，镜头平稳缓慢推进，不改变角色外貌，不出现文字。"
 
@@ -248,6 +249,15 @@ def render_clips(paths, output, ratio="16:9", fps=30):
     return str(destination)
 
 
+def request_stop(task_id):
+    """Stop NEW paid dispatch. Existing remote provider jobs may still bill."""
+    with _LOCK:
+        if task_id not in _ACTIVE:
+            return False
+        _STOP.add(task_id)
+        return True
+
+
 def start(task_id, segments, *, ratio="16:9", duration=5,
           confirmed=False, force_new_failed=False):
     """One explicit approval for up to MAX_SHOTS paid video generations."""
@@ -273,12 +283,16 @@ def start(task_id, segments, *, ratio="16:9", duration=5,
             "output_path": str(_directory(task_id) / "video_first.mp4"),
         }
         _write(task_id, record)
+        _STOP.discard(task_id)
         _ACTIVE.add(task_id)
 
     def work():
         try:
             paths = []
             for shot in shots:
+                with _LOCK:
+                    if task_id in _STOP:
+                        raise VideoFirstError("已停止后续付费镜头任务；已提交的任务仍可能产生费用")
                 # Never silently start another paid job for an image that
                 # changed during generation.
                 if shot_video_jobs._identity(shot["image"]) != shot["signature"]:
@@ -292,6 +306,9 @@ def start(task_id, segments, *, ratio="16:9", duration=5,
                     )
                     deadline = time.monotonic() + 1200
                     while time.monotonic() < deadline:
+                        with _LOCK:
+                            if task_id in _STOP:
+                                raise VideoFirstError("已停止后续付费镜头任务；已提交的任务仍可能产生费用")
                         current = shot_video_jobs.status(task_id, shot["index"], shot["image"])
                         if current.get("status") in {"completed", "failed", "stale", "interrupted"}:
                             break
@@ -343,6 +360,7 @@ def start(task_id, segments, *, ratio="16:9", duration=5,
         finally:
             with _LOCK:
                 _ACTIVE.discard(task_id)
+                _STOP.discard(task_id)
 
     threading.Thread(target=work, name=f"video-first-{task_id}", daemon=True).start()
     return status(task_id, segments, ratio=ratio)
