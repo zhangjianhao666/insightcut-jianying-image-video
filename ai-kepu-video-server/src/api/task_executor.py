@@ -1941,7 +1941,7 @@ class TaskExecutor:
             image_prompts = [row.get("image_prompt") or "" for row in persisted_segments]
             planned_shots = {}
             visual_bible = {}
-            if resume_work.prompt_indexes:
+            if resume_work.prompt_indexes and getattr(pipeline, "article_generator", None):
                 from src.text.storyboard_director import plan_storyboard
                 plan = plan_storyboard(
                     task_id, pipeline.article_generator,
