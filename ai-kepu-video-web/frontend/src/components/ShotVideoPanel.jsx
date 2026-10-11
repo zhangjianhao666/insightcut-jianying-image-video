@@ -12,13 +12,14 @@ export function ShotVideoPanel({ taskId, segment, onReady }) {
   const [error, setError] = useState('')
   const notifiedReady = useRef(false)
   useEffect(() => {
-    setPrompt(segment?.image_prompt
-      ? `保持首帧画面主体与造型不变，镜头缓慢推进，环境有细微自然运动。`
-      : '')
+    setPrompt(segment?.motion_prompt
+      || (segment?.image_prompt
+        ? '保持首帧画面主体与造型不变，镜头缓慢推进，环境有细微自然运动。'
+        : ''))
     notifiedReady.current = false
     setState({ status: 'not_generated' })
     setError('')
-  }, [taskId, index])
+  }, [taskId, index, segment?.motion_prompt])
   useEffect(() => {
     if (!taskId || index === undefined || index === null) return undefined
     let active = true
