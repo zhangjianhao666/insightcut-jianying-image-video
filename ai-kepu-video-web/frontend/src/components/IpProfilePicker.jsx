@@ -3,13 +3,14 @@ import request from '../api/request'
 
 const BASE = '/ai/native/video/kepu'
 const empty = {
-  name: '', persona: '', voice_style: '', visual_identity: '',
+  name: '', persona: '', voice_style: '', voice_type: '', visual_identity: '',
   outfit: '', world: '', art_style: '', camera_style: '', negative_rules: '',
 }
 const inputs = [
   ['name', 'IP 名称', '例如：熊猫阿财'],
   ['persona', '角色人设 / 性格', '例如：懂金融、性格温和、有点幽默的熊猫'],
   ['voice_style', '固定讲述风格', '例如：第一人称、亲切、用故事解释复杂概念'],
+  ['voice_type', '固定配音音色 ID（可选）', '例如：mimo:冰糖 或 doubao:音色ID'],
   ['visual_identity', '固定外貌 / 五官', '例如：黑白熊猫，圆脸，小眼睛，短四肢'],
   ['outfit', '固定服装 / 道具', '例如：始终穿蓝色背带裤，戴红色围巾'],
   ['world', '世界观 / 常见场景', '例如：温暖的山村和图书馆'],
@@ -68,7 +69,7 @@ export function IpProfilePicker({ value, onChange }) {
       }
       setProfiles(current => [...current.filter(p => p.ip_id !== updated.ip_id), updated]
         .sort((a, b) => a.name.localeCompare(b.name)))
-      onChange(updated.ip_id)
+      onChange(updated.ip_id, updated)
       setEditing(false)
     } catch {
       setError('IP 保存失败，请检查表单或参考图格式')
@@ -78,7 +79,10 @@ export function IpProfilePicker({ value, onChange }) {
   }
   return <fieldset className="control-group" aria-label="系列 IP 角色库">
     <legend>固定讲述者 IP（跨视频复用）</legend>
-    <select aria-label="当前项目的 IP" value={value || ''} onChange={event => onChange(event.target.value)}>
+    <select aria-label="当前项目的 IP" value={value || ''} onChange={event => {
+        const id = event.target.value
+        onChange(id, profiles.find(p => p.ip_id === id) || null)
+      }}>
       <option value="">不使用固定 IP（自由创作）</option>
       {profiles.map(profile => <option key={profile.ip_id} value={profile.ip_id}>
         {profile.name} · v{profile.version}
