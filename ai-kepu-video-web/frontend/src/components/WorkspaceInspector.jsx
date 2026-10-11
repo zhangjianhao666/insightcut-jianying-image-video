@@ -23,6 +23,7 @@ import { createProductionTemplate, getAssetLibrary, listProductionTemplates, sel
 import { SPEED_LEVEL_OPTIONS, doubaoSpeedRatio, resolveSegmentVoiceSettings } from '../lib/voiceCatalog'
 import { secondsToLabel, segmentDuration } from '../pages/previewUtils'
 import { VoicePicker } from './VoicePicker'
+import { ShotVideoPanel } from './ShotVideoPanel'
 import { SegmentFailureList } from './SegmentFailureList'
 import { AssetHistory } from './ui/AssetHistory'
 import { Tooltip } from './ui/Tooltip'
@@ -76,6 +77,7 @@ export function WorkspaceInspector({
   onSaveRuntime,
   onOpenApi,
   onAssetSelected,
+  onVideoReady,
   pendingEdits = false,
 }) {
   const [activeTab, setActiveTab] = useState(open ? 'settings' : 'segment')
@@ -233,6 +235,7 @@ export function WorkspaceInspector({
           <button type="button" disabled={Boolean(busyAction)} onClick={() => changeTab('versions')}><History size={14} />素材版本</button>
         </div>
         <div className="workspace-inspector-actions"><Tooltip label={pendingEdits ? '请等待当前修改保存完成' : currentSegment.image_prompt ? '只处理当前分镜图片，不会重新生成其他素材' : '请先重新生成这一段的提示词'}><button type="button" disabled={!editable || pendingEdits || !currentSegment.image_prompt || currentSegment.prompt_status !== 'completed' || busyAction === `image:${currentSegment.segment_index}`} onClick={() => onRegenerate(currentSegment, 'image')}>{operationTarget(currentSegment, 'image') || busyAction === `image:${currentSegment.segment_index}` ? <LoaderCircle className="spin" size={14} /> : <WandSparkles size={14} />}{currentSegment.image_status === 'completed' ? '重新生成图片' : currentSegment.image_status === 'stale' ? '更新此图' : '重试图片'}</button></Tooltip><Tooltip label={pendingEdits ? '请等待音色或语速保存完成' : '只处理当前分镜配音，不会重新生成其他素材'}><button type="button" disabled={!editable || pendingEdits || busyAction === `audio:${currentSegment.segment_index}`} onClick={() => onRegenerate(currentSegment, 'audio')}>{operationTarget(currentSegment, 'audio') || busyAction === `audio:${currentSegment.segment_index}` ? <LoaderCircle className="spin" size={14} /> : <Volume2 size={14} />}{currentSegment.audio_status === 'completed' ? '重新生成配音' : currentSegment.audio_status === 'stale' ? '更新配音' : '重试配音'}</button></Tooltip></div>
+        <ShotVideoPanel taskId={taskId} segment={currentSegment} onReady={onVideoReady} />
         {storageWarning ? <p className="workspace-inspector-storage-warning" role="status"><AlertTriangle size={14} /><span>素材仍可使用，但本地归档尚未完成。</span></p> : null}
       </> : <div className="workspace-inspector-skeleton"><i /><i /><i /><i /><i /></div>}
     </div> : ['versions', 'project'].includes(activeTab) ? <div className="workspace-asset-library-panel" role="tabpanel" aria-labelledby={`workspace-${activeTab}-tab`}>
