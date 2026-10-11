@@ -54,6 +54,8 @@ def confirm(task_id, payload):
 
 def cancel(task_id):
     from . import routes as r
+    from src.media.video_first import request_stop as stop_video_first
+    stop_video_first(task_id)
     flows = r.mysql_client.production_list(task_id=task_id, active=True)
     for f in flows:
         r.mysql_client.production_update(f['flow_id'],cancel_requested=1,state='cancelling')
