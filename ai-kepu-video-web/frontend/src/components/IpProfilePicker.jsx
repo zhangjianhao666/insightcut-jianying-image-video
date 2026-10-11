@@ -3,7 +3,7 @@ import request from '../api/request'
 
 const BASE = '/ai/native/video/kepu'
 const empty = {
-  name: '', persona: '', voice_style: '', voice_type: '', visual_identity: '',
+  name: '', persona: '', voice_style: '', voice_type: '', catchphrase: '', canon: '', visual_identity: '',
   outfit: '', world: '', art_style: '', camera_style: '', negative_rules: '',
 }
 const inputs = [
@@ -11,6 +11,8 @@ const inputs = [
   ['persona', '角色人设 / 性格', '例如：懂金融、性格温和、有点幽默的熊猫'],
   ['voice_style', '固定讲述风格', '例如：第一人称、亲切、用故事解释复杂概念'],
   ['voice_type', '固定配音音色 ID（可选）', '例如：mimo:冰糖 或 doubao:音色ID'],
+  ['catchphrase', '固定口头禅（可选）', '例如：故事讲完，我们来算一笔账。'],
+  ['canon', '跨期不变的世界观事实', '例如：阿财住在同一个村子，在书店教人理财；不能突然改成另一个角色。'],
   ['visual_identity', '固定外貌 / 五官', '例如：黑白熊猫，圆脸，小眼睛，短四肢'],
   ['outfit', '固定服装 / 道具', '例如：始终穿蓝色背带裤，戴红色围巾'],
   ['world', '世界观 / 常见场景', '例如：温暖的山村和图书馆'],
