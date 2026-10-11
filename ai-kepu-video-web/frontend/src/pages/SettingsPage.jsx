@@ -41,6 +41,8 @@ import { EmptyState, LoadingState } from '../components/StatusStates'
 import { EmptyStateCard } from '../components/ui/EmptyStateCard'
 import {
   AGNES_PRESET,
+  WAN_IMAGE_PRESET,
+  chooseImageProvider,
   normalizeConcurrency,
   normalizeConfig,
   normalizeRetryCount,
@@ -66,9 +68,10 @@ import { normalizeMediaUrl } from '../utils/mediaUrl'
 import './delivery-pages.css'
 
 const IMAGE_SIZES = ['auto', '1024x1024', '1536x1024', '1024x1536', '1792x1024', '1024x1792', '1920x1080', '1080x1920']
+const WAN_SIZES = ['auto', '1280x720', '720x1280', '960x1280', '1280x960', '1024x1024']
 const SECTION_LINKS = [
   { id: 'settings-llm', label: '生文模型', icon: MessageSquareText },
-  { id: 'settings-image', label: 'Agnes 生图', icon: Image },
+  { id: 'settings-image', label: 'AI 生图', icon: Image },
   { id: 'settings-tts', label: '配音模型', icon: Volume2 },
   { id: 'settings-runtime', label: '生成策略', icon: Cpu },
 ]
@@ -232,7 +235,7 @@ export function SettingsPage({ embedded = false, onClose }) {
     const mimoReady = !mimoEnabled || Boolean(form.tts.mimo.base_url && form.tts.mimo.api_key && form.tts.mimo.model && form.tts.mimo.clone_model && form.tts.mimo.default_voice)
     return [
       { label: '生文 API', ready: llmReady, detail: llmReady ? form.llm.model : '配置不完整' },
-      { label: 'Agnes 生图', ready: imageReady, detail: imageReady ? form.image.model : '配置不完整' },
+      { label: form.image.provider === 'wan' ? '百炼万相生图' : 'Agnes 生图', ready: imageReady, detail: imageReady ? form.image.model : '配置不完整' },
       { label: '豆包 TTS', ready: doubaoReady, detail: doubaoEnabled ? (doubaoReady ? '已启用' : '配置不完整') : '未启用' },
       { label: 'MiMo TTS', ready: mimoReady, detail: mimoEnabled ? (mimoReady ? '已启用' : '配置不完整') : '未启用' },
     ]
@@ -652,17 +655,41 @@ export function SettingsPage({ embedded = false, onClose }) {
             />
           </ConfigSection>
 
-          <ConfigSection id="settings-image" icon={Image} title="Agnes 生图" badge="Image" description="真实调用 Agnes Image 2.1 Flash 图片生成接口。">
-            <Field label="服务商 / 模型" wide group><span className="settings-fixed-summary">Agnes / <code>{AGNES_PRESET.model}</code></span></Field>
-            <Field label="API Key"><input type="password" autoComplete="off" value={form.image.api_key} onChange={event => updateSection('image', 'api_key', event.target.value)} placeholder="sk-..." /></Field>
-            <Field label="图片尺寸"><select value={form.image.size} onChange={event => updateSection('image', 'size', event.target.value)}>{IMAGE_SIZES.map(size => <option value={size} key={size}>{size === 'auto' ? '自动匹配画幅' : size}</option>)}</select></Field>
+          <ConfigSection id="settings-image" icon={Image} title="图片生成" badge="Image" description="支持百炼万相 2.7 与旧版 Agnes 生图，均保留图片版本和逐镜头重试。">
+            <Field label="图片 Provider" wide group>
+              <Segmented value={form.image.provider} onChange={value => setForm(current => chooseImageProvider(current, value))}
+                options={[[ 'wan', '百炼万相' ], [ 'agnes', 'Agnes' ]]} />
+            </Field>
+            <Field label="当前模型" wide group>
+              <span className="settings-fixed-summary">
+                {form.image.provider === 'wan' ? '万相 / ' : 'Agnes / '}
+                <code>{form.image.model}</code>
+              </span>
+            </Field>
+            <Field label="API Key"><input type="password" autoComplete="off" value={form.image.api_key}
+              onChange={event => updateSection('image', 'api_key', event.target.value)} placeholder="本地密钥，不要提交 Git" /></Field>
+            <Field label="图片尺寸"><select value={form.image.size}
+              onChange={event => updateSection('image', 'size', event.target.value)}>
+              {(form.image.provider === 'wan' ? WAN_SIZES : IMAGE_SIZES).map(size =>
+                <option value={size} key={size}>{size === 'auto' ? '自动匹配分镜画幅' : size}</option>)}
+            </select></Field>
+            {form.image.provider === 'wan' ? <p className="settings-fixed-summary">
+              使用当前北京工作空间的 /api/v1 接口；切换到万相时自动填充当前 LLM 服务地址和 Key（可修改）。
+              生成图片会产生费用，建议先测试一张图。
+            </p> : null}
             <AdvancedSettings
               title="高级配置"
               summary={`${form.image.api_url || '未设置 URL'} · ${form.image.model || '未设置模型'}`}
-              onRestore={() => setForm(current => restoreAgnesPreset(current))}
+              onRestore={() => setForm(current => current.image.provider === 'wan'
+                ? { ...current, image: { ...current.image, ...WAN_IMAGE_PRESET } }
+                : restoreAgnesPreset(current))}
             >
-              <label><span>API URL</span><input value={form.image.api_url} onChange={event => updateSection('image', 'api_url', event.target.value)} placeholder={AGNES_PRESET.api_url} /></label>
-              <label><span>Model</span><input value={form.image.model} onChange={event => updateSection('image', 'model', event.target.value)} placeholder={AGNES_PRESET.model} /></label>
+              <label><span>API URL</span><input value={form.image.api_url}
+                onChange={event => updateSection('image', 'api_url', event.target.value)}
+                placeholder={form.image.provider === 'wan' ? 'https://WORKSPACE.cn-beijing.maas.aliyuncs.com/api/v1' : AGNES_PRESET.api_url} /></label>
+              <label><span>Model</span><input value={form.image.model}
+                onChange={event => updateSection('image', 'model', event.target.value)}
+                placeholder={form.image.provider === 'wan' ? WAN_IMAGE_PRESET.model : AGNES_PRESET.model} /></label>
             </AdvancedSettings>
           </ConfigSection>
 
