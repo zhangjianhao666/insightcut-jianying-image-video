@@ -1938,12 +1938,12 @@ async def get_voices(
 ):
     """返回双 provider 预置音色与 MiMo 本地克隆音色。"""
     normalized_provider = (provider or "").strip().lower() or None
-    if normalized_provider not in {None, "doubao", "mimo"}:
-        raise HTTPException(status_code=400, detail="provider 只支持 doubao 或 mimo")
+    if normalized_provider not in {None, "doubao", "mimo", "silent"}:
+        raise HTTPException(status_code=400, detail="provider 只支持 doubao、mimo 或 silent")
     presets = mysql_client.list_tts_voices(
         provider=normalized_provider,
         include_disabled=include_disabled,
-    )
+    ) if normalized_provider != "silent" else []
     result = [
         {
             "id": voice["id"],
@@ -1962,6 +1962,22 @@ async def get_voices(
         }
         for voice in presets
     ]
+    if normalized_provider in {None, "silent"}:
+        result.insert(0, {
+            "id": "silent:default",
+            "voice_id": "default",
+            "name": "无旁白（仅画面）",
+            "gender": "none",
+            "language": "none",
+            "description": "本机生成静音时间轴；无需额外 TTS Key 和费用",
+            "provider": "silent",
+            "kind": "preset",
+            "source": "local",
+            "is_enabled": True,
+            "status": "ready",
+            "preview_url": None,
+            "capabilities": {"speed_level": False},
+        })
     if normalized_provider in {None, "mimo"}:
         for clone in _voice_clone_store().list(include_hidden=include_disabled):
             if not include_disabled and not (
