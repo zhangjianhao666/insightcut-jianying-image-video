@@ -4,6 +4,7 @@ Generates one PNG synchronously and archives bytes locally. Never puts an API
 key in logs or reports; never sends a paid batch without the normal project
 asset-generation action.
 """
+import base64
 import io
 import os
 from pathlib import Path
@@ -92,12 +93,41 @@ class WanImageGenerator:
                     return str(item["image"])
         raise WanImageError("百炼未返回生成图片地址")
 
-    def submit(self, prompt: str, size: str) -> str:
+    @staticmethod
+    def _reference_data_url(path):
+        picture = Path(path).resolve()
+        if not picture.is_file() or picture.stat().st_size > 20 * 1024 * 1024:
+            raise WanImageError("IP 参考形象图片不存在或超过 20MB")
+        # Validate actual image type before embedding; no arbitrary local media.
+        try:
+            with Image.open(picture) as image:
+                image.verify()
+            with Image.open(picture) as image:
+                if image.format not in {"JPEG", "PNG", "WEBP"}:
+                    raise WanImageError("IP 参考图格式不支持")
+                image.load()
+                memory = io.BytesIO()
+                image.convert("RGB").save(memory, format="JPEG", quality=90)
+        except (OSError, UnidentifiedImageError):
+            raise WanImageError("IP 参考图损坏") from None
+        return "data:image/jpeg;base64," + base64.b64encode(memory.getvalue()).decode("ascii")
+
+    def submit(self, prompt: str, size: str, reference_image=None) -> str:
         if not prompt.strip() or len(prompt) > 5000:
             raise WanImageError("文生图提示词应为 1–5000 个字符")
+        content = [{"text": prompt}]
+        if reference_image:
+            # Wan 2.7 can preserve an IP's look through multimodal image
+            # reference input. Text-only mode remains unchanged.
+            content[0]["text"] = (
+                "以输入参考图中的同一角色为固定系列IP：锁定脸型、毛色、"
+                "服饰、人物比例与主要视觉特征。改变场景和动作，但不要改变IP身份。"
+                + prompt
+            )[:5000]
+            content.append({"image": self._reference_data_url(reference_image)})
         payload = {
             "model": self.model,
-            "input": {"messages": [{"role": "user", "content": [{"text": prompt}]}]},
+            "input": {"messages": [{"role": "user", "content": content}]},
             "parameters": {"size": size, "n": 1, "watermark": False},
         }
         try:
@@ -162,6 +192,6 @@ class WanImageGenerator:
         finally:
             temporary.unlink(missing_ok=True)
 
-    def generate(self, prompt: str, size: str, output_path: str) -> str:
-        url = self.submit(prompt, size)
+    def generate(self, prompt: str, size: str, output_path: str, reference_image=None) -> str:
+        url = self.submit(prompt, size, reference_image=reference_image)
         return self.save(url, output_path)
