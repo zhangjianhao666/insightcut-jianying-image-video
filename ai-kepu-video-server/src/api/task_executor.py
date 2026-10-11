@@ -1865,11 +1865,14 @@ class TaskExecutor:
                     "原文脚本检查点",
                 )
             else:
+                from src.text.ip_library import project_ip
+                ip_profile = project_ip(task_id)
                 rewrite_result = pipeline.script_rewriter.rewrite(
                     theme,
                     style=text_style,
                     target_length=length,
                     input_mode=input_mode,
+                    **({"ip_profile": ip_profile} if ip_profile else {}),
                 )
                 pipeline.article = rewrite_result["script"]
                 pipeline.summary = rewrite_result["summary"]
