@@ -25,6 +25,7 @@ if env_path.exists() and os.getenv("INSIGHTCUT_SKIP_DOTENV") != "1":
 from src.api.upload_limits import UploadBodyLimit
 from src.api.routes import router
 from src.api.shot_video_routes import router as shot_video_router
+from src.api.ip_routes import router as ip_library_router
 from src.api.task_manager import task_manager
 from src.api.task_sweeper import task_sweeper
 from src.api.batch_manager import batch_scheduler
@@ -193,6 +194,7 @@ app.add_middleware(
 # 注册路由
 app.include_router(router)
 app.include_router(shot_video_router)
+app.include_router(ip_library_router)
 
 # 本地媒体文件路由。
 # 这里按文件头识别 Content-Type，避免生图接口返回 PNG 但文件名为 .jpg 时被浏览器 ORB 拦截。
