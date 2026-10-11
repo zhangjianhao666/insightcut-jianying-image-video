@@ -37,7 +37,7 @@ python -m pytest -q tests/test_silent_video_mode.py
 从 `ai-kepu-video-web/frontend/` 运行：
 
 ```bash
-npm test -- --test-name-pattern="silent"
+node --test tests/silentVideoMode.test.mjs
 ```
 
 完整前端回归（建议）：
