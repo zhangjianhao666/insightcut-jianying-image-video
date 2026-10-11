@@ -2387,6 +2387,12 @@ async def create_task(request: CreateTaskRequest):
         _model_dict(request.tts_options, exclude_none=True),
     )
 
+    # Validate the shared IP before task creation. Bind the immutable snapshot
+    # before scheduling script/storyboard jobs, preventing a race on new projects.
+    from src.text.ip_library import get_profile, bind_project
+    if request.ip_profile_id and not get_profile(request.ip_profile_id):
+        raise HTTPException(status_code=400, detail="所选 IP 角色不存在")
+
     # 创建任务
     task_id = task_manager.create_task(
         theme=theme_text,
@@ -2408,6 +2414,9 @@ async def create_task(request: CreateTaskRequest):
             _model_dict(request.subtitle_options, exclude_none=True)
         ),
     )
+
+    if request.ip_profile_id:
+        bind_project(task_id, request.ip_profile_id)
 
     # 启动异步执行
     task_executor.execute_task(
