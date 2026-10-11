@@ -1500,6 +1500,19 @@ def _export_mp4(
             )
             shutil.copy2(preview_path, render_path)
         source = "cached"
+    elif (mysql_client.get_task(task.task_id) or {}).get("voice_type") == "silent:default":
+        # Video-first exports are strictly generated MP4 footage. NEVER
+        # silently route back to still images + Ken Burns for this mode.
+        from src.media.video_first import completed_path
+        strict_clip = completed_path(task.task_id, segments, ratio=_task_ratio(task))
+        if not strict_clip:
+            raise RuntimeError("AI 动态视频未全部生成或已过期，不能导出图片轮播。请先完成全部图生视频镜头")
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        render_path = output_path.with_name(
+            f".{output_path.stem}.{uuid.uuid4().hex}.video-first.mp4"
+        )
+        shutil.copy2(strict_clip, render_path)
+        source = "video_first"
     else:
         segment_texts = [seg.get("text") or "" for seg in segments]
         from src.media.shot_video_jobs import matching_video_path
