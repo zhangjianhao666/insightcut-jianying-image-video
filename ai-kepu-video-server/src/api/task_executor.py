@@ -850,11 +850,20 @@ class TaskExecutor:
                 or task_row.get("theme")
                 or ""
             )[:500]
+            from src.text.storyboard_director import load_plan
+            visual_plan = load_plan(task_id) or {}
+            segment_position = next(
+                (i for i, row in enumerate(segments)
+                 if int(row.get("segment_index")) == index), 0
+            )
             prompt = pipeline.image_prompt_agent.generate_prompt(
                 segment_text=segment.get("text") or "",
                 summary=summary,
                 style=visual_style_suffix or visual_style,
                 aspect_ratio=ratio,
+                visual_bible=visual_plan.get("visual_bible") or {},
+                previous_segment=segments[segment_position - 1].get("text", "") if segment_position else "",
+                next_segment=segments[segment_position + 1].get("text", "") if segment_position + 1 < len(segments) else "",
             )
             if cancellation:
                 cancellation.raise_if_cancelled()
@@ -1930,18 +1939,38 @@ class TaskExecutor:
             task.start_step("image_prompt_generation")
             resume_work = build_resume_work(persisted_segments)
             image_prompts = [row.get("image_prompt") or "" for row in persisted_segments]
+            planned_shots = {}
+            visual_bible = {}
+            if resume_work.prompt_indexes:
+                from src.text.storyboard_director import plan_storyboard
+                plan = plan_storyboard(
+                    task_id, pipeline.article_generator,
+                    script=pipeline.article,
+                    segments=pipeline.segments,
+                    summary=pipeline.summary,
+                    style=visual_prompt_style,
+                    ratio=ratio,
+                )
+                planned_shots = plan.get("shots") or {}
+                visual_bible = plan.get("visual_bible") or {}
 
             def generate_prompt_item(i: int):
                 if cancellation:
                     cancellation.raise_if_cancelled()
                 seg = pipeline.segments[i]
                 try:
-                    prompt = pipeline.image_prompt_agent.generate_prompt(
-                        segment_text=seg,
-                        summary=pipeline.summary,
-                        style=visual_prompt_style,
-                        aspect_ratio=ratio,
-                    )
+                    planned = planned_shots.get(str(i)) or {}
+                    prompt = str(planned.get("image_prompt") or "").strip()
+                    if not prompt:
+                        prompt = pipeline.image_prompt_agent.generate_prompt(
+                            segment_text=seg,
+                            summary=pipeline.summary,
+                            style=visual_prompt_style,
+                            aspect_ratio=ratio,
+                            visual_bible=visual_bible,
+                            previous_segment=pipeline.segments[i - 1] if i else "",
+                            next_segment=pipeline.segments[i + 1] if i + 1 < segments_count else "",
+                        )
                     return {"status": "success", "prompt": prompt, "error": None}
                 except TaskCancelled:
                     raise
