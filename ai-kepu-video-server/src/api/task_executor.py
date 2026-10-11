@@ -275,6 +275,15 @@ def build_resume_work(segments: List[dict]) -> ResumeWork:
     )
 
 
+def _attach_ip_reference(task_id: str, pipeline) -> None:
+    """Pin the project's selected reference image to project image generation."""
+    from src.text.ip_library import project_ip
+    profile = project_ip(task_id)
+    image_generator = getattr(pipeline, "image_generator", None)
+    if image_generator and profile and profile.get("reference_image"):
+        image_generator.reference_image = profile["reference_image"]
+
+
 def _safe_project_name(name: str) -> str:
     safe_name = (
         (name or "")
@@ -838,6 +847,7 @@ class TaskExecutor:
             subtitle_options=_task_subtitle_options(task_row),
             generation_options=_task_generation_options(task_row),
         )
+        _attach_ip_reference(task_id, pipeline)
         if cancellation and getattr(pipeline, "image_generator", None):
             pipeline.image_generator.on_provider_wait = cancellation.provider_wait
             pipeline.image_generator.cancellation = cancellation
@@ -1132,6 +1142,7 @@ class TaskExecutor:
             subtitle_options=_task_subtitle_options(task_row),
             generation_options=_task_generation_options(task_row),
         )
+        _attach_ip_reference(task_id, pipeline)
         if cancellation and getattr(pipeline, "image_generator", None):
             pipeline.image_generator.on_provider_wait = cancellation.provider_wait
             pipeline.image_generator.cancellation = cancellation
@@ -1621,6 +1632,7 @@ class TaskExecutor:
                 subtitle_options=_task_subtitle_options(task_row),
                 generation_options=_task_generation_options(task_row),
             )
+            _attach_ip_reference(task_id, pipeline)
             if cancellation and getattr(pipeline, "image_generator", None):
                 pipeline.image_generator.on_provider_wait = cancellation.provider_wait
                 pipeline.image_generator.cancellation = cancellation
@@ -1826,6 +1838,7 @@ class TaskExecutor:
                 subtitle_options=_task_subtitle_options(task_row),
                 generation_options=_task_generation_options(task_row),
             )
+            _attach_ip_reference(task_id, pipeline)
             if cancellation and getattr(pipeline, "image_generator", None):
                 pipeline.image_generator.on_provider_wait = cancellation.provider_wait
                 pipeline.image_generator.cancellation = cancellation
