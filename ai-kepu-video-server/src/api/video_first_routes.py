@@ -67,6 +67,19 @@ async def start_video_first(task_id: str, data: StartVideoFirst, request: Reques
     return _view(task_id, task, segments, request)
 
 
+@router.post("/tasks/{task_id}/video-first/cancel")
+async def cancel_video_first(task_id: str):
+    await asyncio.to_thread(_project, task_id)
+    requested = await asyncio.to_thread(video_first.request_stop, task_id)
+    return {
+        "outcome": "stop_requested" if requested else "not_running",
+        "message": (
+            "后续图生视频付费任务已要求停止；已提交的任务可能继续产生费用"
+            if requested else "没有正在运行的图生视频任务"
+        ),
+    }
+
+
 @router.get("/tasks/{task_id}/video-first/file", name="download_video_first")
 async def download_video_first(task_id: str):
     task, segments = await asyncio.to_thread(_project, task_id)
