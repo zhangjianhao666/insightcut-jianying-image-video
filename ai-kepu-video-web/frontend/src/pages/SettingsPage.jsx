@@ -566,7 +566,7 @@ export function SettingsPage({ embedded = false, onClose }) {
 
   const saveConfig = async () => {
     const reconciledTts = reconcileTtsVoiceConfig(form.tts, voices)
-    if (!hasUsableVoice(voices, reconciledTts.enabled_providers)) {
+    if (!reconciledTts.allow_silent_mode && !hasUsableVoice(voices, reconciledTts.enabled_providers)) {
       toast.warning('至少保留一个可用音色')
       return
     }
@@ -693,7 +693,8 @@ export function SettingsPage({ embedded = false, onClose }) {
             </AdvancedSettings>
           </ConfigSection>
 
-          <ConfigSection id="settings-tts" icon={Volume2} title="配音模型" badge="2 Providers" description="豆包与 MiMo 可同时启用；每个项目会保存音色和参数快照。">
+          <ConfigSection id="settings-tts" icon={Volume2} title="配音模型" badge="可选" description="可选本地无旁白模式；需要中文解说时再启用豆包或 MiMo。">
+            <label className="settings-field is-wide"><span>闭环测试模式</span><span><input type="checkbox" checked={Boolean(form.tts.allow_silent_mode)} onChange={event => updateTts('allow_silent_mode', event.target.checked)} /> 暂不配置配音服务，允许保存 LLM / 生图设置</span><small>选择此项后，可以在创建视频时选择“无旁白（仅画面）”。会生成本地静音 WAV 作为时间轴，不会调用配音模型；有声项目仍需合法 TTS 密钥。</small></label>
             <div className="settings-provider-switches"><label><input type="checkbox" checked={form.tts.enabled_providers.includes('doubao')} onChange={event => setProviderEnabled('doubao', event.target.checked)} /><span><strong>豆包 TTS</strong><small>预置 10 个本地音色</small></span></label><label><input type="checkbox" checked={form.tts.enabled_providers.includes('mimo')} onChange={event => setProviderEnabled('mimo', event.target.checked)} /><span><strong>小米 MiMo</strong><small>9 个预置 + 本地声音克隆</small></span></label></div>
             <Field label="新项目默认 Provider" wide group><Segmented value={form.tts.provider} onChange={value => form.tts.enabled_providers.includes(value) ? updateTts('provider', value) : toast.warning('请先启用该 Provider')} options={[['doubao', '豆包 TTS'], ['mimo', '小米 MiMo TTS']]} /></Field>
             <Field label="当前编辑" wide group><Segmented value={providerTab} onChange={setProviderTab} options={[['doubao', '豆包配置'], ['mimo', 'MiMo 配置']]} /></Field>
