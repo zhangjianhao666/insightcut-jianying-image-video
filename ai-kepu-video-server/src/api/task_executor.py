@@ -871,9 +871,11 @@ class TaskExecutor:
                 summary=summary,
                 style=visual_style_suffix or visual_style,
                 aspect_ratio=ratio,
-                visual_bible=visual_plan.get("visual_bible") or {},
-                previous_segment=segments[segment_position - 1].get("text", "") if segment_position else "",
-                next_segment=segments[segment_position + 1].get("text", "") if segment_position + 1 < len(segments) else "",
+                **({
+                    "visual_bible": visual_plan.get("visual_bible"),
+                    "previous_segment": segments[segment_position - 1].get("text", "") if segment_position else "",
+                    "next_segment": segments[segment_position + 1].get("text", "") if segment_position + 1 < len(segments) else "",
+                } if visual_plan.get("visual_bible") else {}),
             )
             if cancellation:
                 cancellation.raise_if_cancelled()
