@@ -27,6 +27,12 @@ def confirm(task_id, payload):
         raise HTTPException(409, '预案已变化，请确认最新内容')
     if not segments or any(not s.get('image_prompt') or s.get('prompt_status') in ('failed','processing') for s in segments):
         raise HTTPException(409, '分镜提示词尚未就绪')
+    if row.get('voice_type') == 'silent:default':
+        from src.media.video_first import MAX_SHOTS
+        if len(segments) > MAX_SHOTS:
+            raise HTTPException(409, f'当前有 {len(segments)} 个镜头，视频优先模式第一版最多支持 {MAX_SHOTS} 个；请减少分镜再确认费用')
+        if payload.get('confirm_paid_video') is not True:
+            raise HTTPException(400, '请确认万相将为每个镜头生成付费动态视频')
     if row.get('workflow_phase') == 'planning' or row.get('status') == 'pending':
         raise HTTPException(409, '预案仍在生成中')
     if not r._workspace_health(row, segments)['assets_complete']:
@@ -116,11 +122,41 @@ class ProductionScheduler:
             else:db.production_update(fid,state='failed',error=row.get('error') or '部分素材未完成，请重试；成功内容已保留')
         elif f['state']=='render_queued':
             if r.task_runtime.is_running(tid):return
+            if row.get('voice_type') == 'silent:default':
+                # Approved visual-first route. Actual Wan videos are mandatory,
+                # never silently replaced by Ken Burns/static images.
+                from src.media import video_first
+                outcome=video_first.start(
+                    tid,segments,ratio=row.get('ratio') or '16:9',
+                    duration=5,confirmed=True,
+                )
+                db.production_update(fid,state='rendering',job_id=outcome.get('job_id'))
+                return
             payload={'target':'mp4','auto_download':False,'production_flow_id':fid,'approval_key':f['approval_key']}
             job,created=r._create_or_reuse_export_job(tid,'mp4',payload)
             db.production_update(fid,state='rendering',job_id=job['job_id'])
             if created:r._submit_export(job,True,payload)
         elif f['state']=='rendering':
+            if row.get('voice_type') == 'silent:default':
+                from src.media import video_first
+                outcome=video_first.status(tid,segments,ratio=row.get('ratio') or '16:9')
+                if outcome['status']=='completed':
+                    task=r.task_manager.get_task(tid)
+                    final=video_first.completed_path(
+                        tid,segments,ratio=row.get('ratio') or '16:9'
+                    )
+                    if not task or not final:
+                        db.production_update(fid,state='failed',error='动态视频拼接文件缺失')
+                        return
+                    url=f'/ai/native/video/kepu/tasks/{tid}/video-first/file'
+                    r._write_preview_manifest(task,r.Path(final),url,segments)
+                    r._set_task_result_preserving(task,len(segments),video_url=url)
+                    db.production_update(fid,state='completed',error=None)
+                    db.update_task_workflow(tid,'ready',status='completed',current_step='completed')
+                    r.task_manager.invalidate_task_cache(tid)
+                elif outcome['status'] in ('failed','interrupted','stale'):
+                    db.production_update(fid,state='failed',error=outcome.get('error') or '动态镜头生成中断，请检查并继续')
+                return
             job=r._export_job_snapshot(f['job_id'])
             if job.get('status')=='completed':
                 task=r.task_manager.get_task(tid)
