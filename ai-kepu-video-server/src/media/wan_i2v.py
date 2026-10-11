@@ -23,20 +23,32 @@ class WanImageToVideo:
         configured = Config.load_model_config()
         llm = configured.get("llm") or {}
         image = configured.get("image") or {}
+
+        def is_aliyun_url(value):
+            parsed_url = urlparse(str(value or ""))
+            host = (parsed_url.hostname or "").lower()
+            return parsed_url.scheme == "https" and (
+                host == "dashscope.aliyuncs.com"
+                or host in {"dashscope-intl.aliyuncs.com", "dashscope-us.aliyuncs.com"}
+                or host.endswith(".maas.aliyuncs.com")
+            )
+
+        # Never reuse an unrelated image-provider key (e.g., Agnes) or
+        # non-Alibaba OpenAI-compatible URL as a Wan video endpoint.
+        wan_image = image.get("provider") == "wan"
         self.api_key = (
             api_key or os.environ.get("DASHSCOPE_API_KEY")
             or os.environ.get("WAN_IMAGE_API_KEY")
-            or image.get("api_key") or llm.get("api_key") or ""
+            or (image.get("api_key") if wan_image and is_aliyun_url(image.get("api_url")) else None)
+            or (llm.get("api_key") if is_aliyun_url(llm.get("base_url")) else None)
+            or ""
         )
-        # A Beijing workspace provides OpenAI-compatible chat at
-        # /compatible-mode/v1 and Wan's async API at /api/v1.
-        # Explicit DASHSCOPE_BASE_URL wins over the chat endpoint.
         raw_base = (
             base_url
             or os.environ.get("DASHSCOPE_BASE_URL")
-            or os.environ.get("LLM_BASE_URL")
-            or image.get("api_url")
-            or llm.get("base_url")
+            or (image.get("api_url") if wan_image and is_aliyun_url(image.get("api_url")) else None)
+            or (os.environ.get("LLM_BASE_URL") if is_aliyun_url(os.environ.get("LLM_BASE_URL")) else None)
+            or (llm.get("base_url") if is_aliyun_url(llm.get("base_url")) else None)
             or "https://dashscope.aliyuncs.com/api/v1"
         ).rstrip("/")
         parsed = urlparse(raw_base)
