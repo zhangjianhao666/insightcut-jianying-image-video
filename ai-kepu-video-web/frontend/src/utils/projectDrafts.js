@@ -53,6 +53,7 @@ export function createDraft(overrides = {}) {
     ratio: '16:9',
     visual_style: '吉卜力',
     custom_visual_style: '',
+    silent_video: true, // Video-first is the default, voiceover is opt-in.
     text_style: '知识科普',
     voice_type: '',
     voice_name: '',
