@@ -83,6 +83,7 @@ def _shot_inputs(task_id, segments, ratio, duration):
             "index": index,
             "image": str(Path(image).resolve()),
             "signature": shot_video_jobs._identity(image),
+            "text": str(segment.get("text") or ""),
             "motion_prompt": motion_prompt[:1500],
             "duration": duration,
         })
@@ -99,7 +100,7 @@ def _fingerprint(shots, ratio):
     ).hexdigest()
 
 
-def _current(task_id, segments):
+def _current(task_id, segments, ratio=None):
     """Report current shot states. Image/video snapshots must still match."""
     record = _load(task_id)
     state = record.get("status", "not_started")
@@ -120,7 +121,7 @@ def _current(task_id, segments):
                 signature = shot_video_jobs._identity(seg["image_path"])
             except OSError:
                 signature = None
-            if signature != shot["signature"]:
+            if signature != shot["signature"] or str(seg.get("text") or "") != shot.get("text", ""):
                 item = {"index": shot["index"], "status": "stale"}
                 valid = False
             else:
@@ -129,6 +130,8 @@ def _current(task_id, segments):
         if item["status"] == "completed":
             completed += 1
         shots.append(item)
+    if ratio is not None and normalize_ratio(ratio) != record.get("ratio"):
+        valid = False
     if len(segments) != len(expected):
         valid = False
     if not valid:
@@ -150,9 +153,9 @@ def _current(task_id, segments):
     }
 
 
-def status(task_id, segments):
+def status(task_id, segments, ratio=None):
     with _LOCK:
-        return _current(task_id, segments)
+        return _current(task_id, segments, ratio)
 
 
 def _exec(cmd, timeout=900):
@@ -247,7 +250,7 @@ def start(task_id, segments, *, ratio="16:9", duration=5,
         existing = _load(task_id)
         if existing.get("fingerprint") == fingerprint and existing.get("status") == "completed":
             if Path(existing.get("output_path") or "/nonexistent").is_file():
-                return _current(task_id, segments)
+                return _current(task_id, segments, ratio)
         record = {
             "job_id": uuid.uuid4().hex,
             "status": "generating", "fingerprint": fingerprint,
@@ -325,10 +328,10 @@ def start(task_id, segments, *, ratio="16:9", duration=5,
                 _ACTIVE.discard(task_id)
 
     threading.Thread(target=work, name=f"video-first-{task_id}", daemon=True).start()
-    return status(task_id, segments)
+    return status(task_id, segments, ratio=ratio)
 
 
-def completed_path(task_id, segments):
-    if status(task_id, segments).get("status") != "completed":
+def completed_path(task_id, segments, ratio=None):
+    if status(task_id, segments, ratio=ratio).get("status") != "completed":
         return None
     return _load(task_id).get("output_path")
