@@ -774,13 +774,15 @@ export function WorkspacePage() {
   }
 
   const confirmVoice = async () => {
-    if (!selectedVoice) return toast.warning('请先选择一个配音音色')
+    if (!selectedVoice) return toast.warning('请选择配音音色或本地无旁白模式')
     setBusyAction('voice-validation')
     try {
-      await previewVoice(
-        { voice_type: selectedVoice, tts_options: ttsOptions },
-        { silent: true },
-      )
+      if (selectedVoice !== 'silent:default') {
+        await previewVoice(
+          { voice_type: selectedVoice, tts_options: ttsOptions },
+          { silent: true },
+        )
+      }
     } catch (error) {
       setBusyAction('')
       return toast.error(`该音色当前无法生成配音：${errorToastMessage(error)}`)
@@ -789,7 +791,7 @@ export function WorkspacePage() {
     if (saved) {
       setWorkspaceSettingsOpen(false)
       if (window.matchMedia?.('(max-width: 780px)').matches) selectMobilePane('preview')
-      toast.success('全片音色已确认')
+      toast.success(selectedVoice === 'silent:default' ? '已启用本地无旁白模式' : '全片音色已确认')
     }
   }
 
@@ -826,7 +828,7 @@ export function WorkspacePage() {
       }
       const latest = await getTaskWorkspace(taskId)
       await confirmProduction(taskId, { snapshot_key: latest.snapshot_key, plan_version: latest.plan_version })
-      toast.success('已确认生产，图片、配音和视频将在后台连续生成')
+      toast.success(selectedVoice === 'silent:default' ? '开始生成图片、静音时间轴和视频' : '已确认生产，图片、配音和视频将在后台连续生成')
       workspacePolling.refresh()
     } catch (error) {
       toast.error(errorToastMessage(error))
