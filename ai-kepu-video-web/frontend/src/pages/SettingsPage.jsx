@@ -236,8 +236,8 @@ export function SettingsPage({ embedded = false, onClose }) {
     return [
       { label: '生文 API', ready: llmReady, detail: llmReady ? form.llm.model : '配置不完整' },
       { label: form.image.provider === 'wan' ? '百炼万相生图' : 'Agnes 生图', ready: imageReady, detail: imageReady ? form.image.model : '配置不完整' },
-      { label: '豆包 TTS', ready: doubaoReady, detail: doubaoEnabled ? (doubaoReady ? '已启用' : '配置不完整') : '未启用' },
-      { label: 'MiMo TTS', ready: mimoReady, detail: mimoEnabled ? (mimoReady ? '已启用' : '配置不完整') : '未启用' },
+      { label: '豆包 TTS', ready: form.tts.allow_silent_mode || doubaoReady, detail: form.tts.allow_silent_mode && !doubaoReady ? '未配置 · 无旁白模式下可跳过' : doubaoEnabled ? (doubaoReady ? '已启用' : '配置不完整') : '未启用' },
+      { label: 'MiMo TTS', ready: form.tts.allow_silent_mode || mimoReady, detail: form.tts.allow_silent_mode && !mimoReady ? '未配置 · 无旁白模式下可跳过' : mimoEnabled ? (mimoReady ? '已启用' : '配置不完整') : '未启用' },
     ]
   }, [form, selectedLlmProvider])
 
