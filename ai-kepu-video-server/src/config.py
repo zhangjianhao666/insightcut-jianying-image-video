@@ -96,6 +96,10 @@ class Config:
     MIMO_TTS_STYLE_PROMPT: str = _env("MIMO_TTS_STYLE_PROMPT", "自然清晰，适合中文短视频旁白。")
 
     # 图像生成配置
+    IMAGE_PROVIDER: str = _env("IMAGE_PROVIDER", "agnes").lower()
+    WAN_IMAGE_MODEL: str = _env("WAN_IMAGE_MODEL", "wan2.7-image")
+    WAN_IMAGE_API_URL: str = _env("WAN_IMAGE_API_URL", "")
+    WAN_IMAGE_API_KEY: str = _env("WAN_IMAGE_API_KEY", "")
     SEEDREAM_API_KEY: str = _env("SEEDREAM_API_KEY", "")
     SEEDREAM_API_URL: str = _env("SEEDREAM_API_URL", "https://apihub.agnes-ai.com/v1/images/generations")
     SEEDREAM_MODEL: str = _env("SEEDREAM_MODEL", "agnes-image-2.1-flash")
@@ -118,10 +122,21 @@ class Config:
                 "provider_options": {},
             },
             "image": {
-                "api_url": cls.SEEDREAM_API_URL,
-                "api_key": cls.SEEDREAM_API_KEY,
-                "model": cls.SEEDREAM_MODEL,
-                "size": _env("SEEDREAM_SIZE", "auto"),
+                "provider": cls.IMAGE_PROVIDER if cls.IMAGE_PROVIDER in {"wan", "agnes"} else "agnes",
+                "api_url": (
+                    cls.WAN_IMAGE_API_URL
+                    or _env("DASHSCOPE_BASE_URL")
+                    or cls.LLM_BASE_URL
+                    or "https://dashscope.aliyuncs.com/api/v1"
+                ) if cls.IMAGE_PROVIDER == "wan" else cls.SEEDREAM_API_URL,
+                "api_key": (
+                    cls.WAN_IMAGE_API_KEY
+                    or _env("DASHSCOPE_API_KEY")
+                    or cls.LLM_API_KEY
+                ) if cls.IMAGE_PROVIDER == "wan" else cls.SEEDREAM_API_KEY,
+                "model": cls.WAN_IMAGE_MODEL if cls.IMAGE_PROVIDER == "wan" else cls.SEEDREAM_MODEL,
+                "size": _env("WAN_IMAGE_SIZE", "auto") if cls.IMAGE_PROVIDER == "wan"
+                        else _env("SEEDREAM_SIZE", "auto"),
             },
             "tts": {
                 "provider": cls.TTS_PROVIDER,
