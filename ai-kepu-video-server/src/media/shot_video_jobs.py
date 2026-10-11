@@ -79,7 +79,13 @@ def status(task_id, segment_index, image_path=None, base=None):
 
 
 def matching_video_path(task_id, segment):
-    item = status(task_id, int(segment["segment_index"]), segment.get("image_path"))
+    try:
+        index = int(segment.get("segment_index"))
+    except (TypeError, ValueError, AttributeError):
+        return None
+    if not segment.get("image_path"):
+        return None
+    item = status(task_id, index, segment.get("image_path"))
     if item.get("status") == "completed":
         return item.get("video_path")
     return None
