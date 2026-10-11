@@ -110,3 +110,35 @@ def test_interrupted_job_reuses_original_task(monkeypatch, tmp_path):
             break
         time.sleep(0.01)
     assert calls == ["saved-task"]
+
+
+def test_ffmpeg_uses_dynamic_video_and_drops_model_audio(monkeypatch, tmp_path):
+    """Dynamic clips must follow TTS duration instead of using model audio."""
+    import subprocess
+    import wave
+    from src.export.ffmpeg_exporter import FFmpegExporter
+    model_clip = tmp_path / "model.mp4"
+    model_clip.write_bytes(b"sample")
+    audio = tmp_path / "narration.wav"
+    with wave.open(str(audio), "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(24000)
+        wav.writeframes(b"\\x00\\x00" * 24000)
+    exporter = FFmpegExporter(canvas={"width": 640, "height": 360, "fps": 24})
+    commands = []
+    def fake_run(cmd, **kwargs):
+        commands.append(cmd)
+        Path(cmd[-1]).write_bytes(b"rendered")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+    monkeypatch.setattr(exporter, "_run_command", fake_run)
+    result = exporter._build_segment_clip(
+        index=0, image_path=str(model_clip), audio_path=str(audio),
+        text="测试镜头", anim_type=0, scale_end=1.0, tmp_dir=str(tmp_path),
+    )
+    assert Path(result).is_file()
+    command = commands[0]
+    assert command[command.index("-stream_loop") + 1] == "-1"
+    assert command.count("-map") == 2
+    assert "1:a" in command
+    assert command[command.index("-t") + 1] == "1.000"
