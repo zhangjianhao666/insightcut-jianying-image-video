@@ -18,10 +18,11 @@ from src.config import Config
 
 
 _LOCK = threading.RLock()
-_FIELDS = ("name", "persona", "voice_style", "voice_type", "visual_identity", "outfit",
+_FIELDS = ("name", "persona", "voice_style", "voice_type", "catchphrase", "canon", "visual_identity", "outfit",
            "world", "art_style", "camera_style", "negative_rules")
 _MAX = {
     "name": 80, "persona": 900, "voice_style": 650, "voice_type": 120,
+    "catchphrase": 200, "canon": 1200,
     "visual_identity": 1000, "outfit": 450, "world": 600,
     "art_style": 650, "camera_style": 400, "negative_rules": 400,
 }
@@ -173,4 +174,6 @@ def narration_guidance(profile):
         f"名字：{profile.get('name', '')}\n"
         f"人设：{profile.get('persona', '')[:600]}\n"
         f"讲述口吻：{profile.get('voice_style', '')[:500]}\n"
+        f"固定口头禅：{profile.get('catchphrase', '')[:150]}\n"
+        f"系列不可篡改的背景事实：{profile.get('canon', '')[:900]}\n"
     )
