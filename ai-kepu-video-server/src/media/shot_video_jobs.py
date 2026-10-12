@@ -159,8 +159,8 @@ def matching_video_path(task_id, segment):
         # they may reuse a previously approved clip with stale scene/voice.
         from src.media import h3_references
         if h3_references.mode(task_id) == "reference":
-            from src.text.storyboard_director import lookup_shot
-            shot = lookup_shot(task_id, index, segment.get("text") or "")
+            from src.text.storyboard_director import load_plan
+            shot = ((load_plan(task_id) or {}).get("shots") or {}).get(str(index)) or {}
             try:
                 expected = h3_references.fingerprint_now(
                     task_id, segment["image_path"], shot.get("scene_id") or "",
