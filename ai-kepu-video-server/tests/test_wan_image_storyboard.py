@@ -1,3 +1,4 @@
+from pathlib import Path
 """All tests are offline and do not call a billable image/LLM API."""
 import io
 import json
@@ -59,9 +60,12 @@ def test_wan_model_payload_and_archiving(tmp_path):
     )
     result = adapter.generate("same panda in a blue coat", "1280*720", tmp_path / "shot.png")
     assert Image.open(result).size == (32, 24)
+    import json
+    receipt = json.loads(Path(result).with_suffix(".receipt.json").read_text())
+    assert receipt["requested_count"] == receipt["returned_count"] == 1
     url, request = session.posts[0]
     assert url.endswith("/api/v1/services/aigc/multimodal-generation/generation")
-    assert request["json"]["parameters"] == {"size": "1280*720", "n": 1, "watermark": False}
+    assert request["json"]["parameters"] == {"size": "1280*720", "n": 1, "enable_sequential": False, "watermark": False}
     assert request["json"]["input"]["messages"][0]["content"] == [{"text": "same panda in a blue coat"}]
     assert request["headers"]["Authorization"] == "Bearer test-only"
     assert session.gets[0][1]["allow_redirects"] is False
@@ -161,3 +165,22 @@ def test_storyboard_failure_is_recoverable(monkeypatch, tmp_path):
     )
     assert plan["shots"] == {}
     assert load_plan("broken")["visual_bible"] == {}
+
+
+def test_wan_preserves_receipt_and_stops_on_extra_images(tmp_path):
+    import json
+    class ExtraImages(FakeSession):
+        def post(self, url, **kwargs):
+            self.posts.append((url, kwargs))
+            return FakeResponse(data={"request_id": "test-request", "usage": {"image_count": 2},
+                "output": {"choices": [{"message": {"content": [
+                    {"image": "https://result.oss-cn-beijing.aliyuncs.com/a.png"},
+                    {"image": "https://result.oss-cn-beijing.aliyuncs.com/b.png"}]}}]}})
+    session = ExtraImages()
+    adapter = wan_image.WanImageGenerator("test-only", "https://dashscope.aliyuncs.com", session=session)
+    with pytest.raises(wan_image.WanImageError, match="张数异常"):
+        adapter.generate("chickpeas", "1280*720", tmp_path / "shot.png")
+    receipt = json.loads((tmp_path / "shot.receipt.json").read_text())
+    assert receipt["returned_count"] == receipt["usage_image_count"] == 2
+    assert len(session.posts) == 1
+    assert not session.gets

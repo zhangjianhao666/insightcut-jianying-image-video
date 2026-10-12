@@ -190,3 +190,4 @@ npm run dev
 - MiniMax 图片配置使用 `image.provider=minimax`、官方 `/v1/image_generation`、`model=image-01`；逐镜传入导演图片描述和已有 IP 参考图，单次 `n=1`，关闭 prompt_optimizer，Base64 返回落本地。不记录 Key、参考图 DataURL 或完整请求。
 - 模型正文为空或输出截断必须报告失败，禁止用通用提示词伪造完成；导演方案保存到检查点，取消和重试保留已生成文本及图片。
 - IP 已有参考图时，导演必须同时获得外观和服装文字约束；字段不完整时阻止规划，不得凭角色名字或性格发明外观。参考图与文字必须一致。
+- 万相逐镜请求固定 `n=1` 且 `enable_sequential=false`；图片旁的 `.receipt.json` 保存 request_id、请求张数、返回张数及 usage.image_count，不保存 Key 或完整请求。返回张数或用量超过1时报错，核对记录后再决定是否继续。

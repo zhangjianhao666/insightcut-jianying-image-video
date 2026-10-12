@@ -6,6 +6,7 @@ asset-generation action.
 """
 import base64
 import io
+import json
 import os
 from pathlib import Path
 from urllib.parse import urlparse
@@ -128,7 +129,7 @@ class WanImageGenerator:
         payload = {
             "model": self.model,
             "input": {"messages": [{"role": "user", "content": content}]},
-            "parameters": {"size": size, "n": 1, "watermark": False},
+            "parameters": {"size": size, "n": 1, "enable_sequential": False, "watermark": False},
         }
         try:
             response = self.session.post(
@@ -141,7 +142,15 @@ class WanImageGenerator:
                 timeout=(15, 180),
             )
             response.raise_for_status()
-            return self._extract_image_url(response.json())
+            result = response.json()
+            images = [item["image"] for choice in (result.get("output") or {}).get("choices") or []
+                      for item in (choice.get("message") or {}).get("content") or []
+                      if isinstance(item, dict) and item.get("image")]
+            self.receipt = {"provider": "wan", "model": self.model, "requested_count": 1,
+                            "returned_count": len(images),
+                            "usage_image_count": (result.get("usage") or {}).get("image_count"),
+                            "request_id": str(result.get("request_id") or "")[:200]}
+            return self._extract_image_url(result)
         except (requests.RequestException, ValueError) as exc:
             raise WanImageError("万相生图调用失败，请检查模型权限、额度、地域及网络") from None
 
@@ -194,4 +203,9 @@ class WanImageGenerator:
 
     def generate(self, prompt: str, size: str, output_path: str, reference_image=None) -> str:
         url = self.submit(prompt, size, reference_image=reference_image)
+        receipt_path = Path(output_path).with_suffix(".receipt.json")
+        receipt_path.parent.mkdir(parents=True, exist_ok=True)
+        receipt_path.write_text(json.dumps(self.receipt, ensure_ascii=False), encoding="utf-8")
+        if self.receipt["returned_count"] != 1 or self.receipt["usage_image_count"] not in (None, 1):
+            raise WanImageError("服务商返回张数异常，核对用量记录后再继续")
         return self.save(url, output_path)
