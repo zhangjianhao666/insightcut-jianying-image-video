@@ -5,7 +5,7 @@ MP4; the static image exporter is NEVER used by these endpoints.
 """
 import asyncio
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Optional
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
@@ -21,7 +21,7 @@ class StartVideoFirst(BaseModel):
     confirm_paid_generation: bool = Field(default=False)
     duration: int | None = Field(default=None)
     force_new_failed: bool = Field(default=False)
-    audio_mode: Literal['native', 'mute'] = 'native'
+    audio_mode: Optional[Literal["native", "mute"]] = None
 
 
 def _project(task_id):
@@ -44,6 +44,19 @@ def _view(task_id, task, segments, request):
     value["duration_options"] = list(shot_video_jobs.duration_options())
     value["default_duration"] = shot_video_jobs.default_duration()
     return value
+
+
+class AudioPreference(BaseModel):
+    audio_mode: Literal["native", "mute"]
+
+
+@router.put("/tasks/{task_id}/video-first/audio-preference")
+async def update_video_audio_preference(task_id: str, payload: AudioPreference):
+    await asyncio.to_thread(_project, task_id)
+    mode = await asyncio.to_thread(
+        video_first.set_audio_preference, task_id, payload.audio_mode
+    )
+    return {"preferred_audio_mode": mode}
 
 
 @router.get("/tasks/{task_id}/video-first")
