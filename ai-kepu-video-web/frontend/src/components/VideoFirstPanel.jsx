@@ -29,7 +29,7 @@ export function VideoFirstPanel({ taskId, segments = [], ratio = '16:9', product
   const activeSeconds = durationOptions.includes(seconds)
     ? seconds
     : (job.default_duration ?? durationOptions[0])
-  const activeAudioMode = audioMode || job.audio_mode || 'native'
+  const activeAudioMode = audioMode || job.preferred_audio_mode || job.audio_mode || 'native'
   const readyImages = useMemo(
     () => segments.filter(s => s.image_status === 'completed' && s.image_url).length,
     [segments],
@@ -37,6 +37,8 @@ export function VideoFirstPanel({ taskId, segments = [], ratio = '16:9', product
   const available = count > 0 && count <= 12 && readyImages === count
   const activeFlow = ['queued', 'generating_assets', 'render_queued', 'rendering', 'cancelling']
     .includes(production?.state)
+
+  useEffect(() => { setAudioMode(null) }, [taskId])
 
   useEffect(() => {
     if (!taskId) return undefined
@@ -49,6 +51,7 @@ export function VideoFirstPanel({ taskId, segments = [], ratio = '16:9', product
         })
         if (live) {
           setJob(data)
+          setAudioMode(current => current ?? data.preferred_audio_mode ?? data.audio_mode ?? 'native')
           setError('')
         }
       } catch {
@@ -97,6 +100,21 @@ export function VideoFirstPanel({ taskId, segments = [], ratio = '16:9', product
       setError(e?.response?.data?.detail || '无法启动动态镜头任务；请检查首帧、模型权限和项目状态')
     } finally {
       setBusy(false)
+    }
+  }
+  const updateAudioMode = async nextMode => {
+    const previous = activeAudioMode
+    setAudioMode(nextMode)
+    try {
+      const result = await request({
+        url: `${ROOT}/tasks/${encodeURIComponent(taskId)}/video-first/audio-preference`,
+        method: 'put', data: { audio_mode: nextMode },
+      })
+      setJob(current => ({ ...current, preferred_audio_mode: result.preferred_audio_mode }))
+      setError('')
+    } catch {
+      setAudioMode(previous)
+      setError('保存音频策略失败，请重试；不要在保存失败时启动自动生产')
     }
   }
   const cancelFutureCalls = async () => {
@@ -164,8 +182,8 @@ export function VideoFirstPanel({ taskId, segments = [], ratio = '16:9', product
       <p>{review.audio_note}</p>
     </details> : null}
     <div className="video-first-actions">
-      <label>音频策略 <select value={activeAudioMode} disabled={running}
-        onChange={event => setAudioMode(event.target.value)}>
+      <label>音频策略 <select value={activeAudioMode} disabled={running || activeFlow || busy}
+        onChange={event => { void updateAudioMode(event.target.value) }}>
         <option value="native">保留模型原生环境声</option>
         <option value="mute">移除原生声音，后期统一配音</option>
       </select></label>
