@@ -101,7 +101,7 @@ def compose_motion_prompt(plan, index, fallback, limit=MAX_PROMPT):
     # meaningful motion instruction even when the shot has a detailed bible.
     direction = "；".join(item for item in locks if item)
     direction = direction[:1100]
-    narrative = _short(current.get("motion_prompt") or fallback, max(0, limit - 200))
+    narrative = _short(fallback or current.get("motion_prompt"), max(0, limit - 200))
     return f"{lead}；{direction}；动作与运镜：{narrative}"[:limit]
 
 
