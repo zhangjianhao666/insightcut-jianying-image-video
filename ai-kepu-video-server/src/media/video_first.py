@@ -18,7 +18,7 @@ import uuid
 from pathlib import Path
 
 from src.config import Config
-from src.media import shot_video_jobs
+from src.media import h3_references, shot_video_jobs
 from src.text.storyboard_director import DEFAULT_MOTION_PROMPT, load_plan, lookup_shot
 from src.text.continuity import compose_motion_prompt
 from src.utils.rendering import normalize_ratio
@@ -101,6 +101,11 @@ def _shot_inputs(task_id, segments, ratio, duration):
         raise VideoFirstError("单镜头时长只能是 " + "、".join(str(value) for value in options) + " 秒")
     result = []
     plan = load_plan(task_id) or {}
+    if h3_references.mode(task_id) == "reference":
+        from src.media.minimax_i2v import is_h3_model
+        config = shot_video_jobs._video_config()
+        if shot_video_jobs.video_provider() != "minimax" or not is_h3_model(config.get("model")):
+            raise VideoFirstError("当前为 H3 参考生成模式，请先选择 MiniMax-H3 或 MiniMax-H3-Max")
     for segment in sorted(segments, key=lambda row: int(row.get("segment_index") or 0)):
         index = int(segment.get("segment_index") or 0)
         image = segment.get("image_path")
@@ -112,7 +117,12 @@ def _shot_inputs(task_id, segments, ratio, duration):
             motion_prompt = DEFAULT_MOTION_PROMPT
         if direction:
             motion_prompt = compose_motion_prompt(plan, index, motion_prompt)
+        reference_assets = h3_references.for_shot(
+            task_id, image, direction.get("scene_id") or "",
+        )
         result.append({
+            "reference_assets": reference_assets,
+            "reference_fingerprint": (reference_assets or {}).get("fingerprint", "first_frame"),
             "index": index,
             "image": str(Path(image).resolve()),
             "signature": shot_video_jobs._identity(image),
@@ -127,7 +137,8 @@ def _shot_inputs(task_id, segments, ratio, duration):
 
 def _fingerprint(shots, ratio, audio_mode="native"):
     stable = [
-        (item["index"], item["signature"], item["motion_prompt"], item["duration"])
+        (item["index"], item["signature"], item["motion_prompt"], item["duration"],
+         item.get("reference_fingerprint", "first_frame"))
         for item in shots
     ]
     return hashlib.sha256(
@@ -144,6 +155,7 @@ def _matches_planned_clip(snapshot, shot):
     return (
         (not snapshot.get("prompt") or snapshot.get("prompt") == shot["motion_prompt"])
         and (snapshot.get("duration") is None or snapshot.get("duration") == shot["duration"])
+        and snapshot.get("reference_fingerprint", "first_frame") == shot.get("reference_fingerprint", "first_frame")
     )
 
 
@@ -175,8 +187,15 @@ def _current(task_id, segments, ratio=None):
                                                      shot["index"], current_direction.get("motion_prompt")
                                                      or DEFAULT_MOTION_PROMPT)
                               if current_direction else DEFAULT_MOTION_PROMPT)
+            try:
+                actual_refs = h3_references.fingerprint_now(
+                    task_id, seg["image_path"], current_direction.get("scene_id") or "",
+                )
+            except (OSError, ValueError):
+                actual_refs = "invalid"
             if (signature != shot["signature"] or shot_text != shot.get("text", "")
-                    or current_prompt != shot.get("motion_prompt")):
+                    or current_prompt != shot.get("motion_prompt")
+                    or actual_refs != shot.get("reference_fingerprint", "first_frame")):
                 item = {"index": shot["index"], "status": "stale"}
                 valid = False
             else:
@@ -400,10 +419,15 @@ def start(task_id, segments, *, ratio="16:9", duration=None,
                     # An image-only signature is insufficient: a clip made
                     # for an older director prompt must not be silently
                     # inserted into the new approved storyboard.
+                    kwargs = {
+                        "duration": shot["duration"],
+                        "force_new": force_new_failed and current.get("status") == "failed",
+                    }
+                    if shot.get("reference_assets") is not None:
+                        kwargs["reference_assets"] = shot["reference_assets"]
                     shot_video_jobs.start(
                         task_id, shot["index"], shot["image"],
-                        shot["motion_prompt"], duration=shot["duration"],
-                        force_new=force_new_failed and current.get("status") == "failed",
+                        shot["motion_prompt"], **kwargs,
                     )
                     deadline = time.monotonic() + 1200
                     while time.monotonic() < deadline:
@@ -442,8 +466,13 @@ def start(task_id, segments, *, ratio="16:9", duration=None,
                      if audio_mode == "mute"
                      else render_clips(paths, record["output_path"], ratio=ratio))
             if ([shot_video_jobs._identity(path) for path in paths] != clip_signatures
-                    or any(shot_video_jobs._identity(shot["image"]) != shot["signature"]
-                   for shot in shots)):
+                    or any(
+                        shot_video_jobs._identity(shot["image"]) != shot["signature"]
+                        or h3_references.fingerprint_now(
+                            task_id, shot["image"], shot.get("scene_id") or ""
+                        ) != shot.get("reference_fingerprint", "first_frame")
+                        for shot in shots
+                    )):
                 Path(final).unlink(missing_ok=True)
                 raise VideoFirstError("渲染期间首帧已变化，请重新生成")
             with _LOCK:
