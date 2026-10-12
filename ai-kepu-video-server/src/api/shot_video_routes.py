@@ -8,6 +8,8 @@ from pydantic import BaseModel, Field
 
 from src.database import mysql_client
 from src.media import shot_video_jobs
+from src.text.storyboard_director import load_plan, lookup_shot
+from src.text.continuity import compose_motion_prompt
 from src.media.minimax_i2v import MinimaxVideoError
 from src.media.wan_i2v import WanVideoError
 
@@ -67,10 +69,15 @@ async def generate_shot_video(
     # Explicit action starts a paid call. No automatic dispatch from project confirmation.
     if data.force_new and shot_video_jobs.status(task_id, segment_index).get("status") == "running":
         raise HTTPException(409, "当前分镜已有生成任务")
+    direction = lookup_shot(task_id, segment_index, segment.get("text") or "")
+    composed_prompt = (
+        compose_motion_prompt(load_plan(task_id) or {}, segment_index, data.prompt)
+        if direction else data.prompt
+    )
     try:
         await asyncio.to_thread(
             shot_video_jobs.start, task_id, segment_index,
-            segment["image_path"], data.prompt,
+            segment["image_path"], composed_prompt,
             duration=data.duration, force_new=data.force_new,
         )
     except (ValueError, OSError) as exc:
