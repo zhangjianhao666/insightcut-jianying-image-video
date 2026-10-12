@@ -159,7 +159,7 @@ def matching_video_path(task_id, segment):
     return None
 
 
-def start(task_id, segment_index, image_path, prompt, *, duration=None, force_new=False, base=None, provider_factory=None):
+def start(task_id, segment_index, image_path, prompt, *, duration=None, force_new=False, base=None, provider_factory=None, reference_assets=None):
     """Explicit user action only. Returns immediately; no paid batch dispatch."""
     image_path = str(Path(image_path).resolve())
     signature = _identity(image_path)
@@ -169,6 +169,17 @@ def start(task_id, segment_index, image_path, prompt, *, duration=None, force_ne
     options = duration_options()
     if duration not in options:
         raise ValueError("生成时长应为 " + "、".join(str(value) for value in options) + " 秒")
+    reference_fingerprint = (
+        str(reference_assets.get("fingerprint") or "")
+        if reference_assets is not None else "first_frame"
+    )
+    if reference_assets is not None:
+        from src.media.minimax_i2v import is_h3_model
+        video = _video_config()
+        if video_provider() != "minimax" or not is_h3_model(video.get("model")):
+            raise ValueError("H3 多模态参考模式需要选择 MiniMax-H3 或 MiniMax-H3-Max")
+        if not reference_fingerprint:
+            raise ValueError("H3 参考素材快照缺少指纹")
     key = (str(task_id), segment_index)
     with _lock:
         if key in _active:
@@ -178,6 +189,7 @@ def start(task_id, segment_index, image_path, prompt, *, duration=None, force_ne
             existing.get("image_signature") == signature
             and existing.get("prompt") == prompt
             and existing.get("duration") == duration
+            and existing.get("reference_fingerprint", "first_frame") == reference_fingerprint
         )
         if not force_new and same_request and existing.get("status") == "completed":
             return existing
@@ -192,6 +204,7 @@ def start(task_id, segment_index, image_path, prompt, *, duration=None, force_ne
         record = {
             "status": "running", "image_signature": signature,
             "prompt": prompt, "duration": duration,
+            "reference_fingerprint": reference_fingerprint,
             "provider_task_id": reuse_id,
             "video_path": str(directory / f"{segment_index:04d}_{uuid.uuid4().hex}.mp4"),
         }
@@ -201,7 +214,15 @@ def start(task_id, segment_index, image_path, prompt, *, duration=None, force_ne
     def work():
         with _slots:
             try:
-                task = record["provider_task_id"] or provider.submit(image_path, prompt, duration=duration)
+                if record["provider_task_id"]:
+                    task = record["provider_task_id"]
+                elif reference_assets is not None:
+                    task = provider.submit(
+                        image_path, prompt, duration=duration,
+                        reference_assets=reference_assets,
+                    )
+                else:
+                    task = provider.submit(image_path, prompt, duration=duration)
                 record["provider_task_id"] = task
                 with _lock:
                     _write(task_id, segment_index, record, base)
