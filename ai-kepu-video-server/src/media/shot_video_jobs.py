@@ -155,6 +155,22 @@ def matching_video_path(task_id, segment):
         return None
     item = status(task_id, index, segment.get("image_path"))
     if item.get("status") == "completed":
+        # Legacy exports also need reference-aware invalidation; otherwise
+        # they may reuse a previously approved clip with stale scene/voice.
+        from src.media import h3_references
+        if h3_references.mode(task_id) == "reference":
+            from src.text.storyboard_director import lookup_shot
+            shot = lookup_shot(task_id, index, segment.get("text") or "")
+            try:
+                expected = h3_references.fingerprint_now(
+                    task_id, segment["image_path"], shot.get("scene_id") or "",
+                )
+            except (OSError, ValueError):
+                return None
+            if expected != item.get("reference_fingerprint", "first_frame"):
+                return None
+        elif item.get("reference_fingerprint", "first_frame") != "first_frame":
+            return None
         return item.get("video_path")
     return None
 
