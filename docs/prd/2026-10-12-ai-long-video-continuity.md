@@ -199,3 +199,19 @@ npm run build
 - 自动调色、自动演员脸部质量分数与自动修复。
 
 **边界**：这一阶段只做多分镜共享参考的轻量编排，不扩展为完整数字演员、AI 场记或大型长视频平台。
+
+
+## 10. MiniMax-H3 查询与成片下载修复（2026-10-12）
+
+**问题**：此前 H3 创建使用 V2 (`POST /v2/video_generation`)，完成态却仍用海螺 V1 的 `GET /v1/query/video_generation?task_id=` 及 `GET /v1/files/retrieve`。这并非官方 H3 完整链路，可能导致已扣费的任务无法获得可用视频。
+
+**现在**：
+- H3/H3-Max 统一使用 `GET /v2/query/video_generation/{task_id}`，解析 `task.status` (`queued/running/succeeded/failed/cancelled`)；成功时读取 `task.content.url` 下载，无需旧版 `file_id`。
+- 海螺 2.3 等旧模型保留原来的 V1 查询及 `file_id` 获取行为，不强制迁移。
+- 视频 URL 保留公网 HTTPS 安全校验；失败/中止不会自动重新提交付费任务，原 task ID 仍通过已有任务状态机制持久化。
+- Mock 回归覆盖等待中 → 成功、失败/取消、异常状态、无视频地址及非安全 HTTPS 链接。
+- **未调用用户付费 API**；合规测试只能证明代码协议与文档匹配，不能代替真实任务创建、回调和成片验收。
+
+依据：MiniMax 官方 [V2 创建任务](https://platform.minimax.io/docs/api-reference/video-generation-v2-create)、[V2 查询任务](https://platform.minimax.io/docs/api-reference/video-generation-v2-query)。
+
+现存 CI 阻塞另有**依赖安全审计**：Python `multidict 6.8.0`（修复线 6.9.1）、`urllib3 2.7.0`（修复线 2.8.0）；前端 `brace-expansion 5.0.9`、`source-map-js 1.2.1`、`undici 8.10.0` 被高危告警命中。不要手动篡改带 SHA256 的 Python lock 或 npm integrity；使用各自受支持的锁文件生成工具重新锁定并跑完整 CI，再决定合并 PR。
