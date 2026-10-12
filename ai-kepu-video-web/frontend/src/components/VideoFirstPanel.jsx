@@ -110,6 +110,7 @@ export function VideoFirstPanel({ taskId, segments = [], ratio = '16:9', product
     try {
       const response = await request({
         url: referenceBase + suffix, method: verb, data: payload,
+        ...(payload instanceof FormData ? { headers: { 'Content-Type': undefined } } : {}),
       })
       setH3Reference(response)
       // Re-evaluate whether previously generated shots are still valid.
