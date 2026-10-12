@@ -7,7 +7,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from src.database import mysql_client
-from src.media import shot_video_jobs
+from src.media import h3_references, shot_video_jobs
 from src.text.storyboard_director import load_plan, lookup_shot
 from src.text.continuity import compose_motion_prompt
 from src.media.minimax_i2v import MinimaxVideoError
@@ -39,6 +39,15 @@ def _segment(task_id: str, index: int) -> dict:
 def _view(task_id: str, index: int, segment: dict, request: Request) -> dict:
     item = shot_video_jobs.status(task_id, index, segment.get("image_path"))
     state = item.get("status", "not_generated")
+    current_shot = lookup_shot(task_id, index, segment.get("text") or "")
+    try:
+        fingerprint = h3_references.fingerprint_now(
+            task_id, segment.get("image_path"), current_shot.get("scene_id") or "",
+        )
+    except (OSError, ValueError):
+        fingerprint = "invalid"
+    if state == "completed" and item.get("reference_fingerprint", "first_frame") != fingerprint:
+        state = "stale"
     # Never expose internal provider URLs or filesystem paths to the browser.
     return {
         "status": state,
@@ -46,6 +55,7 @@ def _view(task_id: str, index: int, segment: dict, request: Request) -> dict:
         "duration_options": list(shot_video_jobs.duration_options()),
         "default_duration": shot_video_jobs.default_duration(),
         "video_provider": shot_video_jobs.video_provider(),
+        "reference_mode": h3_references.mode(task_id),
         "prompt": item.get("prompt"),
         "video_url": str(request.url_for("get_shot_video_file", task_id=task_id, segment_index=index))
                      if state == "completed" else None,
@@ -75,10 +85,16 @@ async def generate_shot_video(
         if direction else data.prompt
     )
     try:
+        references = await asyncio.to_thread(
+            h3_references.for_shot, task_id, segment["image_path"],
+            direction.get("scene_id") or "",
+        )
+        kwargs = {"duration": data.duration, "force_new": data.force_new}
+        if references is not None:
+            kwargs["reference_assets"] = references
         await asyncio.to_thread(
             shot_video_jobs.start, task_id, segment_index,
-            segment["image_path"], composed_prompt,
-            duration=data.duration, force_new=data.force_new,
+            segment["image_path"], composed_prompt, **kwargs,
         )
     except (ValueError, OSError) as exc:
         raise HTTPException(400, str(exc)) from exc
@@ -95,6 +111,16 @@ async def generate_shot_video(
 async def get_shot_video_file(task_id: str, segment_index: int):
     segment = await asyncio.to_thread(_segment, task_id, segment_index)
     path = shot_video_jobs.matching_video_path(task_id, segment)
+    shot = lookup_shot(task_id, segment_index, segment.get("text") or "")
+    stored = shot_video_jobs.status(task_id, segment_index, segment.get("image_path"))
+    try:
+        current = h3_references.fingerprint_now(
+            task_id, segment["image_path"], shot.get("scene_id") or "",
+        )
+    except (OSError, ValueError):
+        current = "invalid"
+    if stored.get("reference_fingerprint", "first_frame") != current:
+        path = None
     if not path:
         raise HTTPException(404, "可用的视频片段不存在")
     return FileResponse(path, media_type="video/mp4")
