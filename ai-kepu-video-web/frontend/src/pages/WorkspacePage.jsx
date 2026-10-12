@@ -1201,7 +1201,6 @@ export function WorkspacePage() {
           <span className={`workspace-stage-dot is-${stage.tone}`}>{stage.title}</span>
         </header>
 
-        <VideoFirstPanel taskId={taskId} segments={segments} ratio={workspace.ratio} production={workspace.production} />
         <section className={`workspace-canvas ${ratioClassName(workspace.ratio)}`}>
           {previewMode === 'full' && isRenderingFullVideo
             ? <div className="workspace-full-video-rendering" role="status" aria-live="polite">
@@ -1290,6 +1289,7 @@ export function WorkspacePage() {
             </button>)}
           </div>
         </section>
+        <VideoFirstPanel taskId={taskId} segments={segments} ratio={workspace.ratio} production={workspace.production} />
       </aside>
 
       <WorkspaceStoryboardNav
