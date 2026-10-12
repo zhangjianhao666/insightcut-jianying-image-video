@@ -5,6 +5,7 @@ MP4; the static image exporter is NEVER used by these endpoints.
 """
 import asyncio
 from pathlib import Path
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
@@ -20,6 +21,7 @@ class StartVideoFirst(BaseModel):
     confirm_paid_generation: bool = Field(default=False)
     duration: int | None = Field(default=None)
     force_new_failed: bool = Field(default=False)
+    audio_mode: Literal['native', 'mute'] = 'native'
 
 
 def _project(task_id):
@@ -69,6 +71,7 @@ async def start_video_first(task_id: str, data: StartVideoFirst, request: Reques
             duration=duration,
             confirmed=True,
             force_new_failed=data.force_new_failed,
+            audio_mode=data.audio_mode,
         )
     except video_first.VideoFirstError as error:
         raise HTTPException(409, str(error)) from None
