@@ -187,6 +187,19 @@ def test_compiled_motion_change_invalidates_completed_video(monkeypatch, tmp_pat
     assert video_first.status("project", [segment], ratio="16:9")["status"] == "stale"
 
 
+def test_completed_clip_must_match_exact_director_prompt_and_duration():
+    shot = {"motion_prompt": "新导演脚本", "duration": 5}
+    assert video_first._matches_planned_clip(
+        {"status": "completed", "prompt": "新导演脚本", "duration": 5}, shot
+    )
+    assert not video_first._matches_planned_clip(
+        {"status": "completed", "prompt": "旧导演脚本", "duration": 5}, shot
+    )
+    assert not video_first._matches_planned_clip(
+        {"status": "completed", "prompt": "新导演脚本", "duration": 10}, shot
+    )
+
+
 @pytest.mark.skipif(
     not shutil.which("ffmpeg") or not shutil.which("ffprobe"),
     reason="needs system FFmpeg tools",
