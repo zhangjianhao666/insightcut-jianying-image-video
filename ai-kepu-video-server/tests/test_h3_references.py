@@ -41,6 +41,8 @@ def test_reference_is_off_by_default_and_persisted(root):
     assert h3_references.mode("one") == "first_frame"
     assert h3_references.for_shot("one", frame, "scene_01") is None
     h3_references.select_mode("one", "reference")
+    assert "_private" in str(h3_references._project_dir("one"))
+    assert "data/media" not in str(h3_references._project_dir("one"))
     assert h3_references.mode("one") == "reference"
     shot = h3_references.for_shot("one", frame, "scene_01")
     assert shot["mode"] == "reference"
@@ -102,6 +104,8 @@ def test_rejects_invalid_user_media_and_paths(root):
         h3_references.save_voice_sample("episode", voice(16))
     with pytest.raises(h3_references.H3ReferenceError):
         h3_references.save_voice_sample("episode", b"this is not a WAV")
+    with pytest.raises(h3_references.H3ReferenceError):
+        h3_references.save_voice_sample("episode", voice(4)[:-8000])
     with pytest.raises(h3_references.H3ReferenceError):
         h3_references.overview("../unsafe")
     with pytest.raises(h3_references.H3ReferenceError):
@@ -210,6 +214,32 @@ def test_shot_jobs_only_reuse_same_reference_fingerprint(root, monkeypatch):
     assert len(calls) == 2
     assert calls[0] != calls[1]
     assert shot_video_jobs.status("episode", 0, image)["reference_fingerprint"] == new_ref["fingerprint"]
+
+
+def test_legacy_clip_export_does_not_reuse_stale_h3_reference(root, monkeypatch):
+    monkeypatch.setattr(
+        Config, "load_model_config",
+        classmethod(lambda cls: {"video": {"provider": "minimax", "model": "MiniMax-H3"}}),
+    )
+    from src.text import storyboard_director
+    monkeypatch.setattr(storyboard_director, "load_plan", lambda task_id: {
+        "shots": {"0": {"scene_id": "scene_01"}},
+    })
+    frame = root / "shot.png"
+    frame.write_bytes(picture())
+    h3_references.select_mode("episode", "reference")
+    h3_references.save_scene_image("episode", "scene_01", picture("orange"))
+    reference = h3_references.for_shot("episode", frame, "scene_01")
+    video = root / "cached.mp4"
+    video.write_bytes(b"fake-clip")
+    shot_video_jobs._write("episode", 0, {
+        "status": "completed", "image_signature": shot_video_jobs._identity(frame),
+        "reference_fingerprint": reference["fingerprint"], "video_path": str(video),
+    })
+    segment = {"segment_index": 0, "image_path": str(frame)}
+    assert shot_video_jobs.matching_video_path("episode", segment) == str(video)
+    h3_references.save_scene_image("episode", "scene_01", picture("black"))
+    assert shot_video_jobs.matching_video_path("episode", segment) is None
 
 
 def test_full_video_marks_changed_scene_assets_stale(root, monkeypatch):
