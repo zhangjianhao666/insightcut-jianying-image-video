@@ -19,7 +19,8 @@ from pathlib import Path
 
 from src.config import Config
 from src.media import shot_video_jobs
-from src.text.storyboard_director import DEFAULT_MOTION_PROMPT, lookup_shot
+from src.text.storyboard_director import DEFAULT_MOTION_PROMPT, load_plan, lookup_shot
+from src.text.continuity import compose_motion_prompt
 from src.utils.rendering import normalize_ratio
 
 MAX_SHOTS = 12
@@ -71,6 +72,7 @@ def _shot_inputs(task_id, segments, ratio, duration):
     if duration not in options:
         raise VideoFirstError("单镜头时长只能是 " + "、".join(str(value) for value in options) + " 秒")
     result = []
+    plan = load_plan(task_id) or {}
     for segment in sorted(segments, key=lambda row: int(row.get("segment_index") or 0)):
         index = int(segment.get("segment_index") or 0)
         image = segment.get("image_path")
@@ -80,24 +82,28 @@ def _shot_inputs(task_id, segments, ratio, duration):
         motion_prompt = str(direction.get("motion_prompt") or "").strip()
         if not motion_prompt:
             motion_prompt = DEFAULT_MOTION_PROMPT
+        if direction:
+            motion_prompt = compose_motion_prompt(plan, index, motion_prompt)
         result.append({
             "index": index,
             "image": str(Path(image).resolve()),
             "signature": shot_video_jobs._identity(image),
             "text": str(segment.get("text") or ""),
             "motion_prompt": motion_prompt[:1800],
+            "scene_id": direction.get("scene_id") or "",
+            "transition_to_next": direction.get("transition_to_next") or "cut",
             "duration": duration,
         })
     return result
 
 
-def _fingerprint(shots, ratio):
+def _fingerprint(shots, ratio, audio_mode="native"):
     stable = [
         (item["index"], item["signature"], item["motion_prompt"], item["duration"])
         for item in shots
     ]
     return hashlib.sha256(
-        json.dumps({"shots": stable, "ratio": ratio}, ensure_ascii=False).encode()
+        json.dumps({"shots": stable, "ratio": ratio, "audio_mode": audio_mode}, ensure_ascii=False).encode()
     ).hexdigest()
 
 
@@ -122,7 +128,14 @@ def _current(task_id, segments, ratio=None):
                 signature = shot_video_jobs._identity(seg["image_path"])
             except OSError:
                 signature = None
-            if signature != shot["signature"] or str(seg.get("text") or "") != shot.get("text", ""):
+            shot_text = str(seg.get("text") or "")
+            current_direction = lookup_shot(task_id, shot["index"], shot_text)
+            current_prompt = (compose_motion_prompt(load_plan(task_id) or {},
+                                                     shot["index"], current_direction.get("motion_prompt")
+                                                     or DEFAULT_MOTION_PROMPT)
+                              if current_direction else DEFAULT_MOTION_PROMPT)
+            if (signature != shot["signature"] or shot_text != shot.get("text", "")
+                    or current_prompt != shot.get("motion_prompt")):
                 item = {"index": shot["index"], "status": "stale"}
                 valid = False
             else:
@@ -130,6 +143,8 @@ def _current(task_id, segments, ratio=None):
                 item = {"index": shot["index"], "status": snapshot.get("status", "not_generated")}
         if item["status"] == "completed":
             completed += 1
+        item["scene_id"] = shot.get("scene_id") or ""
+        item["transition_to_next"] = shot.get("transition_to_next") or "cut"
         shots.append(item)
     if ratio is not None and normalize_ratio(ratio) != record.get("ratio"):
         valid = False
@@ -162,6 +177,7 @@ def _current(task_id, segments, ratio=None):
         "has_video": state == "completed",
         "is_strict_video": True,
         "has_audio": bool(record.get("has_audio")),
+        "audio_mode": record.get("audio_mode", "native"),
         "job_id": record.get("job_id"),
     }
 
@@ -211,8 +227,10 @@ def _has_audio(path):
     return result.returncode == 0 and "audio" in result.stdout
 
 
-def render_clips(paths, output, ratio="16:9", fps=30):
-    """Concat clips in order; keep provider audio when the model produced it."""
+def render_clips(paths, output, ratio="16:9", fps=30, audio_mode="native"):
+    """Concat clips with optional provider-audio mute for consistent voiceover later."""
+    if audio_mode not in {"native", "mute"}:
+        raise VideoFirstError("音频策略只支持 native 或 mute")
     if not paths or any(not Path(path).is_file() for path in paths):
         raise VideoFirstError("有动态视频片段缺失，禁止用图片替代")
     ratio = normalize_ratio(ratio)
@@ -228,7 +246,7 @@ def render_clips(paths, output, ratio="16:9", fps=30):
         # A provider that returns native audio (MiniMax-H3) keeps its track;
         # silent providers keep the original video-only render.
         clip_audio = [_has_audio(path) for path in paths]
-        keep_audio = any(clip_audio)
+        keep_audio = audio_mode == "native" and any(clip_audio)
         normalized = []
         for i, path in enumerate(paths):
             _probe(path)
@@ -289,14 +307,16 @@ def request_stop(task_id):
 
 
 def start(task_id, segments, *, ratio="16:9", duration=None,
-          confirmed=False, force_new_failed=False):
+          confirmed=False, force_new_failed=False, audio_mode="native"):
     """One explicit approval for up to MAX_SHOTS paid video generations."""
     if not confirmed:
         raise VideoFirstError("请确认所有待生成镜头将按云端视频模型用量计费")
     ratio = normalize_ratio(ratio)
+    if audio_mode not in {"native", "mute"}:
+        raise VideoFirstError("音频策略不支持此选项")
     duration = shot_video_jobs.default_duration() if duration is None else duration
     shots = _shot_inputs(task_id, segments, ratio, duration)
-    fingerprint = _fingerprint(shots, ratio)
+    fingerprint = _fingerprint(shots, ratio, audio_mode)
     with _LOCK:
         if task_id in _ACTIVE:
             raise VideoFirstError("当前项目已在生成动态镜头，请稍后")
@@ -309,7 +329,7 @@ def start(task_id, segments, *, ratio="16:9", duration=None,
         record = {
             "job_id": uuid.uuid4().hex,
             "status": "generating", "fingerprint": fingerprint,
-            "shots": shots, "duration": duration, "ratio": ratio,
+            "shots": shots, "duration": duration, "ratio": ratio, "audio_mode": audio_mode,
             "completed": 0, "error": None,
             "output_path": str(_directory(task_id) / "video_first.mp4"),
         }
@@ -368,7 +388,9 @@ def start(task_id, segments, *, ratio="16:9", duration=None,
                 record["status"] = "rendering"
                 _write(task_id, record)
             clip_signatures = [shot_video_jobs._identity(path) for path in paths]
-            final = render_clips(paths, record["output_path"], ratio=ratio)
+            final = (render_clips(paths, record["output_path"], ratio=ratio, audio_mode="mute")
+                     if audio_mode == "mute"
+                     else render_clips(paths, record["output_path"], ratio=ratio))
             if ([shot_video_jobs._identity(path) for path in paths] != clip_signatures
                     or any(shot_video_jobs._identity(shot["image"]) != shot["signature"]
                    for shot in shots)):
