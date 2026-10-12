@@ -159,6 +159,9 @@ def matching_video_path(task_id, segment):
         # they may reuse a previously approved clip with stale scene/voice.
         from src.media import h3_references
         if h3_references.mode(task_id) == "reference":
+            from src.media.minimax_i2v import is_h3_model
+            if video_provider() != "minimax" or not is_h3_model(_video_config().get("model")):
+                return None
             from src.text.storyboard_director import load_plan
             shot = ((load_plan(task_id) or {}).get("shots") or {}).get(str(index)) or {}
             try:
