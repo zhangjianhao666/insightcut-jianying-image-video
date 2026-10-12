@@ -107,6 +107,18 @@ def _fingerprint(shots, ratio, audio_mode="native"):
     ).hexdigest()
 
 
+def _matches_planned_clip(snapshot, shot):
+    """A completed MP4 is reusable only for its approved motion and duration."""
+    if snapshot.get("status") != "completed":
+        return False
+    # Metadata-less historical clips keep the old compatibility contract.
+    # New jobs always persist the exact prompt and requested duration.
+    return (
+        (not snapshot.get("prompt") or snapshot.get("prompt") == shot["motion_prompt"])
+        and (snapshot.get("duration") is None or snapshot.get("duration") == shot["duration"])
+    )
+
+
 def _current(task_id, segments, ratio=None):
     """Report current shot states. Image/video snapshots must still match."""
     record = _load(task_id)
@@ -140,7 +152,11 @@ def _current(task_id, segments, ratio=None):
                 valid = False
             else:
                 snapshot = shot_video_jobs.status(task_id, shot["index"], seg["image_path"])
-                item = {"index": shot["index"], "status": snapshot.get("status", "not_generated")}
+                if snapshot.get("status") == "completed" and not _matches_planned_clip(snapshot, shot):
+                    item = {"index": shot["index"], "status": "stale"}
+                    valid = False
+                else:
+                    item = {"index": shot["index"], "status": snapshot.get("status", "not_generated")}
         if item["status"] == "completed":
             completed += 1
         item["scene_id"] = shot.get("scene_id") or ""
@@ -349,7 +365,10 @@ def start(task_id, segments, *, ratio="16:9", duration=None,
                 if shot_video_jobs._identity(shot["image"]) != shot["signature"]:
                     raise VideoFirstError("首帧已修改，停止后续付费请求，请重新确认")
                 current = shot_video_jobs.status(task_id, shot["index"], shot["image"])
-                if current.get("status") != "completed":
+                if not _matches_planned_clip(current, shot):
+                    # An image-only signature is insufficient: a clip made
+                    # for an older director prompt must not be silently
+                    # inserted into the new approved storyboard.
                     shot_video_jobs.start(
                         task_id, shot["index"], shot["image"],
                         shot["motion_prompt"], duration=shot["duration"],
