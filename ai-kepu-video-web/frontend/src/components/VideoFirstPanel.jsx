@@ -227,10 +227,11 @@ export function VideoFirstPanel({ taskId, segments = [], ratio = '16:9', product
         <summary>H3 跨镜头参考 · {h3Reference?.mode === 'reference' ? '已启用' : '未启用'}</summary>
         <p>选「首帧模式」保证采用分镜首帧；选「参考模式」提高相同角色、场景与声音的一致性，
           但 API 不允许两种模式同时使用。参考模式不保证视频从首帧图片原样开始。</p>
-        <label>生成方式 <select value={h3Reference.mode} disabled={referencesLocked || !h3Reference.supports_reference}
+        <label>生成方式 <select value={h3Reference.mode} disabled={referencesLocked || (!h3Reference.supports_reference && h3Reference.mode !== 'reference')}
           onChange={event => { void updateH3('put', '', { mode: event.target.value }) }}>
           <option value="first_frame">首帧图生视频（原有模式）</option>
-          <option value="reference">H3 多模态参考（角色/场景/声音）</option>
+          <option value="reference" disabled={!h3Reference.supports_reference}>H3 多模态参考（角色/场景/声音）</option>
+          
         </select></label>
         <p>角色图：{h3Reference.ip_ready
           ? `自动使用已绑定 IP「${h3Reference.ip_name}」的参考图`
