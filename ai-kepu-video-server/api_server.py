@@ -28,6 +28,7 @@ from src.api.shot_video_routes import router as shot_video_router
 from src.api.ip_routes import router as ip_library_router
 from src.api.video_first_routes import router as video_first_router
 from src.api.continuity_routes import router as continuity_router
+from src.api.h3_reference_routes import router as h3_reference_router
 from src.api.task_manager import task_manager
 from src.api.task_sweeper import task_sweeper
 from src.api.batch_manager import batch_scheduler
@@ -199,6 +200,7 @@ app.include_router(shot_video_router)
 app.include_router(ip_library_router)
 app.include_router(video_first_router)
 app.include_router(continuity_router)
+app.include_router(h3_reference_router)
 
 # 本地媒体文件路由。
 # 这里按文件头识别 Content-Type，避免生图接口返回 PNG 但文件名为 .jpg 时被浏览器 ORB 拦截。
