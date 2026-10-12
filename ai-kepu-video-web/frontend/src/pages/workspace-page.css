@@ -1212,3 +1212,23 @@ button.workspace-preview-row:hover { background: var(--color-accent-soft); }
   background: var(--color-surface-raised);
 }
 .video-first-continuity-shot p { margin: 5px 0 0; }
+
+/* H3 reference mode is an opt-in, local-only control under Video-first. */
+.h3-reference-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 10px;
+  margin: 10px 0;
+}
+.h3-reference-item {
+  display: grid;
+  gap: 7px;
+  padding: 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 9px;
+  background: var(--color-surface-raised);
+  min-width: 0;
+}
+.h3-reference-item input[type="file"] { max-width: 100%; }
+.h3-reference-item span { color: var(--color-ink-muted); }
+.h3-reference-item button { justify-self: start; }
