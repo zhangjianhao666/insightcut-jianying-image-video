@@ -79,7 +79,7 @@ def compose_motion_prompt(plan, index, fallback, limit=MAX_PROMPT):
             "但本镜头仍以自己的首帧图为真实输入，不要假装跨片段像素无缝。"
         )
     elif incoming == "match_cut":
-        lead = "匹配剪辑：延续前一镜头的视觉母题或动作方向，但允许新的机位和构图，不要求画面相同。"
+        lead = "匹配剪辑：延续前一镜头的视觉母题或动作方向，但允许新的机位和构图，不要求两帧像素相同。"
     else:
         lead = "正常切镜：本镜头是独立构图，不要复制上一段的尾帧；只保持已确定的角色、场景和画风设定。"
     bible = (plan or {}).get("visual_bible") or {}
