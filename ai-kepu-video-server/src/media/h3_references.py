@@ -210,9 +210,14 @@ def for_shot(task_id, shot_frame, scene_id):
     images = [str(Path(shot_frame).resolve())]
     profile = project_ip(task_id) or {}
     ip = Path(profile["reference_image"]) if profile.get("reference_image") else None
-    if ip and ip.is_file():
+    if ip and not ip.is_file():
+        raise H3ReferenceError("绑定 IP 的参考图已丢失，请修复或创建新项目")
+    if ip:
         images.append(str(ip.resolve()))
-    scene = _asset(task_id, (settings.get("scenes") or {}).get(scene_id))
+    scene_name = (settings.get("scenes") or {}).get(scene_id)
+    scene = _asset(task_id, scene_name)
+    if scene_name and not scene:
+        raise H3ReferenceError("场景参考图片已丢失，请重新上传")
     if scene:
         images.append(str(scene.resolve()))
     # No duplicate images. First image is current shot composition reference;
@@ -221,6 +226,8 @@ def for_shot(task_id, shot_frame, scene_id):
     if len(images) > 9:
         raise H3ReferenceError("H3 最多允许 9 张参考图片")
     voice = _asset(task_id, settings.get("voice"))
+    if settings.get("voice") and not voice:
+        raise H3ReferenceError("音色参考已丢失，请重新上传")
     audio = str(voice.resolve()) if voice else None
     try:
         digests = [_fingerprint(path) for path in images]
