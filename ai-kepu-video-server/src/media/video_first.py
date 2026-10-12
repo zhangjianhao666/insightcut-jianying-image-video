@@ -43,6 +43,34 @@ def _record_path(task_id):
     return _directory(task_id) / "job.json"
 
 
+def _audio_preference_path(task_id):
+    return _directory(task_id) / "audio_preference.json"
+
+
+def audio_preference(task_id):
+    """Saved before paid generation; producer and standalone renderer agree."""
+    try:
+        data = json.loads(_audio_preference_path(task_id).read_text("utf-8"))
+        mode = data.get("audio_mode")
+        return mode if mode in {"native", "mute"} else "native"
+    except (OSError, ValueError, AttributeError):
+        return "native"
+
+
+def set_audio_preference(task_id, mode):
+    if mode not in {"native", "mute"}:
+        raise VideoFirstError("音频策略不支持此选项")
+    path = _audio_preference_path(task_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        temporary.write_text(json.dumps({"audio_mode": mode}), encoding="utf-8")
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return mode
+
+
 def _load(task_id):
     file = _record_path(task_id)
     if not file.is_file():
@@ -124,7 +152,8 @@ def _current(task_id, segments, ratio=None):
     record = _load(task_id)
     state = record.get("status", "not_started")
     if state == "not_started":
-        return {"status": "not_started", "total": len(segments), "completed": 0}
+        return {"status": "not_started", "total": len(segments), "completed": 0,
+                "preferred_audio_mode": audio_preference(task_id)}
     expected = record.get("shots") or []
     actual = {int(s.get("segment_index") or 0): s for s in segments}
     completed = 0
@@ -194,6 +223,7 @@ def _current(task_id, segments, ratio=None):
         "is_strict_video": True,
         "has_audio": bool(record.get("has_audio")),
         "audio_mode": record.get("audio_mode", "native"),
+        "preferred_audio_mode": audio_preference(task_id),
         "job_id": record.get("job_id"),
     }
 
@@ -323,11 +353,12 @@ def request_stop(task_id):
 
 
 def start(task_id, segments, *, ratio="16:9", duration=None,
-          confirmed=False, force_new_failed=False, audio_mode="native"):
+          confirmed=False, force_new_failed=False, audio_mode=None):
     """One explicit approval for up to MAX_SHOTS paid video generations."""
     if not confirmed:
         raise VideoFirstError("请确认所有待生成镜头将按云端视频模型用量计费")
     ratio = normalize_ratio(ratio)
+    audio_mode = audio_mode if audio_mode is not None else audio_preference(task_id)
     if audio_mode not in {"native", "mute"}:
         raise VideoFirstError("音频策略不支持此选项")
     duration = shot_video_jobs.default_duration() if duration is None else duration
