@@ -1187,3 +1187,28 @@ button.workspace-preview-row:hover { background: var(--color-accent-soft); }
 .video-first-output video { width: 100%; max-height: 380px; background: var(--color-ink); border-radius: 8px; }
 .video-first-output a { color: var(--color-accent); font-weight: 700; }
 @media (max-width: 720px) { .video-first-panel { margin: 8px; padding: 12px; } }
+
+/* Continuity review belongs to the video-first producer, not to static image export. */
+.video-first-continuity {
+  padding: 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: var(--color-surface);
+  font-size: 12px;
+}
+.video-first-continuity > summary {
+  cursor: pointer;
+  font-weight: 700;
+}
+.video-first-continuity > p,
+.video-first-continuity li {
+  line-height: 1.55;
+  color: var(--color-ink-muted);
+}
+.video-first-continuity-shot {
+  margin: 8px 0;
+  padding: 8px 12px;
+  border-left: 2px solid var(--color-accent);
+  background: var(--color-surface-raised);
+}
+.video-first-continuity-shot p { margin: 5px 0 0; }
