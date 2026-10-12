@@ -187,6 +187,17 @@ def test_compiled_motion_change_invalidates_completed_video(monkeypatch, tmp_pat
     assert video_first.status("project", [segment], ratio="16:9")["status"] == "stale"
 
 
+def test_audio_policy_persisted_for_automatic_producer(monkeypatch, tmp_path):
+    monkeypatch.setattr(Config, "BASE_DIR", tmp_path)
+    assert video_first.audio_preference("project") == "native"
+    assert video_first.set_audio_preference("project", "mute") == "mute"
+    assert video_first.audio_preference("project") == "mute"
+    assert video_first.status("project", [])["preferred_audio_mode"] == "mute"
+    with pytest.raises(video_first.VideoFirstError):
+        video_first.set_audio_preference("project", "custom-provider")
+    assert video_first.audio_preference("project") == "mute"
+
+
 def test_completed_clip_must_match_exact_director_prompt_and_duration():
     shot = {"motion_prompt": "新导演脚本", "duration": 5}
     assert video_first._matches_planned_clip(
