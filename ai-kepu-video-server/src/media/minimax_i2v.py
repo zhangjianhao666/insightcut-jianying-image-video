@@ -11,7 +11,7 @@ import os
 import re
 import time
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import requests
 
@@ -351,7 +351,56 @@ class MinimaxImageToVideo:
             raise MinimaxVideoError("海螺未返回视频下载地址")
         return url
 
+    def _wait_h3(self, task_id, timeout=900, interval=6):
+        """Poll H3 V2 tasks; unlike Hailuo V1 the video URL is inline.
+
+        MiniMax H3 uses GET /v2/query/video_generation/{task_id} and returns
+        task.status plus task.content.url. The legacy /v1 query/file endpoints
+        do not apply to H3 and must never be used as fallback.
+        """
+        deadline = time.monotonic() + timeout
+        query_url = (
+            f"{self.base_url}/v2/query/video_generation/"
+            f"{quote(str(task_id), safe='')}"
+        )
+        while time.monotonic() < deadline:
+            try:
+                resp = self.session.get(
+                    query_url, headers=self._headers(), timeout=(10, 30),
+                )
+                resp.raise_for_status()
+                body = resp.json()
+            except (requests.RequestException, ValueError) as exc:
+                raise MinimaxVideoError(
+                    "H3 任务状态查询失败；已保存任务 ID，请稍后恢复查询"
+                ) from exc
+            if not isinstance(body, dict):
+                raise MinimaxVideoError("H3 返回了无效的任务状态")
+            self._check_base_resp(body, "查询 H3 任务状态失败")
+            task = body.get("task")
+            if not isinstance(task, dict):
+                raise MinimaxVideoError("H3 未返回有效的 task 信息")
+            state = str(task.get("status") or "").strip().lower()
+            if state == "succeeded":
+                result = task.get("content")
+                url = result.get("url") if isinstance(result, dict) else None
+                if not _is_public_https(url):
+                    raise MinimaxVideoError("H3 未返回安全的公网 HTTPS 视频地址")
+                return url
+            if state in {"failed", "cancelled", "canceled"}:
+                raise MinimaxVideoError(
+                    "H3 视频任务失败或被取消；请检查任务状态后再手动重试"
+                )
+            if state not in {"queued", "running", "preparing", "processing"}:
+                raise MinimaxVideoError("H3 返回了未知任务状态")
+            time.sleep(interval)
+        raise MinimaxVideoError(
+            "等待 H3 视频超时；已保存任务 ID，重新发起时会优先查询原任务"
+        )
+
     def wait(self, task_id, timeout=900, interval=6):
+        if is_h3_model(self.model):
+            return self._wait_h3(task_id, timeout=timeout, interval=interval)
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             try:
