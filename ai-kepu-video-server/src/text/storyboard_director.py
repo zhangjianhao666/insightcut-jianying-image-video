@@ -15,14 +15,14 @@ from src.config import Config
 from src.text.continuity import normalize_boundaries, normalize_shot, audit_plan
 
 log = logging.getLogger(__name__)
-_PLAN_VERSION = 3
+_PLAN_VERSION = 4
 # Shared fallback so a shot without a planned motion script still tells the
 # image-to-video model to continue the previous frame instead of starting over.
 DEFAULT_MOTION_PROMPT = (
     "正常切镜：这是独立构图，沿用已经确认的角色外观、服装和画风；"
     "主体先有轻微自然动作（呼吸、转头、抬手），环境有细微动态（光影变化、"
     "背景物体自然运动），[Push in] 镜头平稳缓慢推进，不改变角色外貌与画面布局，"
-    "不出现文字、字幕或口型说话；结尾画面保持清晰稳定，"
+    "不出现文字或字幕；结尾画面保持清晰稳定，"
     "便于下一镜头无缝衔接。"
 )
 
@@ -192,10 +192,18 @@ def plan_storyboard(task_id, generator, *, script, segments, summary, style, rat
         "motion_prompt 分四段用分号隔开：① 开场状态与视觉约束；② 动作顺序与速度；"
         "③ [Push in]、[Pan left]、[Tracking shot] 或 [Static shot] 等运镜；"
         "④ 本镜头收尾姿态。不要无条件写承接上一镜头尾帧。"
-        "有台词时描述表演与视线即可，不要求生成模型发出固定人声或字幕；"
-        "真正的讲述音色交给独立音轨统一控制。"
         "最后一镜头 transition_to_next 必须是 cut。严格只输出 JSON。"
     )
+    from src.media.minimax_i2v import is_h3_model
+    video = Config.load_model_config().get("video") or {}
+    if video.get("provider") == "minimax" and is_h3_model(video.get("model")):
+        instructions += (
+            "本期采用 H3 原生中文讲解，每个分镜由同一 IP 主持人说出对应原文。"
+            "动作脚本描述自然口型、表演和视线，不得禁止对白、讲话或口型；"
+            "准确台词由系统从分镜原文编译，声音参考由系统绑定，不要改写台词或生成字幕。"
+        )
+    else:
+        instructions += "有台词时描述表演与视线即可，讲述音色由独立音轨控制，不要求视频模型生成对白。"
     if not compact:
         instructions += "当前镜头太多，本次只创建全片 visual_bible；shots 返回空数组。"
     ip_prompt = ""

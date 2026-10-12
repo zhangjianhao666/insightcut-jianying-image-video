@@ -13,12 +13,12 @@ import os
 import re
 import threading
 import uuid
-import wave
 from pathlib import Path
 
 from PIL import Image, UnidentifiedImageError
 
 from src.config import Config
+from src.media.voice_reference import validate_voice_sample
 from src.text.ip_library import project_ip
 
 _LOCK = threading.RLock()
@@ -93,17 +93,29 @@ def _fingerprint(path):
     return hashlib.sha256(data).hexdigest()
 
 
+def _voice_selection(task_id, settings, profile):
+    if settings.get("voice"):
+        return _asset(task_id, settings["voice"]), "project", None
+    if profile.get("reference_voice"):
+        path = Path(profile["reference_voice"])
+        return path if path.is_file() else None, "ip", profile.get("voice_reference_version", 0)
+    return None, "none", None
+
+
 def overview(task_id, scene_ids=()):
     config = _read(task_id)
     profile = project_ip(task_id) or {}
     ip_ref = Path(profile["reference_image"]) if profile.get("reference_image") else None
     ip_ready = bool(ip_ref and ip_ref.is_file())
     scene_images = config.get("scenes") or {}
+    voice, voice_source, voice_version = _voice_selection(task_id, config, profile)
     return {
         "mode": mode(task_id),
         "ip_ready": ip_ready,
         "ip_name": profile.get("name") if ip_ready else None,
-        "voice_ready": bool(_asset(task_id, config.get("voice"))),
+        "voice_ready": bool(voice),
+        "voice_source": voice_source,
+        "voice_version": voice_version,
         "scenes": [{
             "scene_id": key,
             "image_ready": bool(_asset(task_id, scene_images.get(key))),
@@ -161,23 +173,10 @@ def save_scene_image(task_id, scene_id, data):
 
 
 def save_voice_sample(task_id, data):
-    if not data or len(data) > _AUDIO_UPLOAD_LIMIT:
-        raise H3ReferenceError("声音参考 WAV 不得超过 8 MB")
     try:
-        with wave.open(io.BytesIO(data), "rb") as handle:
-            if handle.getcomptype() != "NONE" or handle.getnchannels() not in {1, 2}:
-                raise H3ReferenceError("仅支持单/双声道未压缩 PCM WAV")
-            if handle.getframerate() <= 0 or handle.getsampwidth() not in {1, 2, 3, 4}:
-                raise H3ReferenceError("WAV 参数不支持")
-            seconds = handle.getnframes() / handle.getframerate()
-            if not (2 <= seconds <= 15):
-                raise H3ReferenceError("声音样本时长须为 2–15 秒")
-            if len(handle.readframes(handle.getnframes())) != (
-                handle.getnframes() * handle.getnchannels() * handle.getsampwidth()
-            ):
-                raise H3ReferenceError("WAV 音频内容不完整")
-    except (wave.Error, EOFError, OSError):
-        raise H3ReferenceError("无效的 PCM WAV 音频") from None
+        seconds = validate_voice_sample(data)
+    except ValueError as error:
+        raise H3ReferenceError(str(error)) from None
     with _LOCK:
         folder = _project_dir(task_id)
         folder.mkdir(parents=True, exist_ok=True)
@@ -233,8 +232,8 @@ def for_shot(task_id, shot_frame, scene_id):
     images = list(dict.fromkeys(images))
     if len(images) > 9:
         raise H3ReferenceError("H3 最多允许 9 张参考图片")
-    voice = _asset(task_id, settings.get("voice"))
-    if settings.get("voice") and not voice:
+    voice, voice_source, voice_version = _voice_selection(task_id, settings, profile)
+    if voice_source != "none" and not voice:
         raise H3ReferenceError("音色参考已丢失，请重新上传")
     audio = str(voice.resolve()) if voice else None
     try:
@@ -246,6 +245,7 @@ def for_shot(task_id, shot_frame, scene_id):
     # Including reference paths is internal only; do not send it to browsers.
     snapshot = {
         "mode": "reference", "images": images, "audio": audio,
+        "voice_source": voice_source, "voice_version": voice_version,
         "digests": digests,
     }
     snapshot["fingerprint"] = hashlib.sha256(

@@ -127,7 +127,7 @@ def test_global_plan_reuse_and_ip_lock(monkeypatch, tmp_path):
     first = storyboard_director.plan_storyboard("series_01", fake, **kwargs)
     next_ = storyboard_director.plan_storyboard("series_01", fake, **kwargs)
     assert len(fake.calls) == 1
-    assert first["version"] == 3
+    assert first["version"] == storyboard_director._PLAN_VERSION
     assert next_["shots"] == first["shots"]
     assert first["shots"]["0"]["start_state"] == "主持人坐在桌边"
     assert "不要假定每个镜头的尾帧必须等于" in fake.calls[0]["messages"][0]["content"]

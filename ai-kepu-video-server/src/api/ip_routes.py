@@ -28,18 +28,21 @@ class IpProfilePayload(BaseModel):
 
 @router.get("/ip-profiles")
 async def list_ip_profiles():
-    return {"items": await asyncio.to_thread(ip_library.list_profiles)}
+    profiles = await asyncio.to_thread(ip_library.list_profiles)
+    return {"items": [ip_library.public_profile(profile) for profile in profiles]}
 
 
 @router.post("/ip-profiles", status_code=201)
 async def create_ip_profile(data: IpProfilePayload):
-    return await asyncio.to_thread(ip_library.save_profile, data.model_dump())
+    profile = await asyncio.to_thread(ip_library.save_profile, data.model_dump())
+    return ip_library.public_profile(profile)
 
 
 @router.put("/ip-profiles/{ip_id}")
 async def update_ip_profile(ip_id: str, data: IpProfilePayload):
     try:
-        return await asyncio.to_thread(ip_library.save_profile, data.model_dump(), ip_id)
+        profile = await asyncio.to_thread(ip_library.save_profile, data.model_dump(), ip_id)
+        return ip_library.public_profile(profile)
     except KeyError:
         raise HTTPException(404, "IP 角色不存在") from None
 
@@ -54,11 +57,33 @@ async def upload_ip_reference(ip_id: str, file: UploadFile = File(...)):
         raise HTTPException(404, "IP 角色不存在") from None
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from None
-    return {"profile": profile, "reference_ready": True}
+    return {"profile": ip_library.public_profile(profile), "reference_ready": True}
+
+
+@router.post("/ip-profiles/{ip_id}/voice-reference")
+async def upload_ip_voice_reference(ip_id: str, file: UploadFile = File(...)):
+    data = await file.read(8 * 1024 * 1024 + 1)
+    try:
+        profile = await asyncio.to_thread(ip_library.save_voice_reference, ip_id, data)
+    except KeyError:
+        raise HTTPException(404, "IP 角色不存在") from None
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from None
+    return {"profile": ip_library.public_profile(profile)}
+
+
+@router.delete("/ip-profiles/{ip_id}/voice-reference")
+async def remove_ip_voice_reference(ip_id: str):
+    try:
+        profile = await asyncio.to_thread(ip_library.clear_voice_reference, ip_id)
+    except KeyError:
+        raise HTTPException(404, "IP 角色不存在") from None
+    return {"profile": ip_library.public_profile(profile)}
 
 
 @router.get("/tasks/{task_id}/ip-profile")
 async def get_project_ip(task_id: str):
     if not mysql_client.get_task(task_id):
         raise HTTPException(404, "项目不存在")
-    return {"profile": await asyncio.to_thread(ip_library.project_ip, task_id)}
+    profile = await asyncio.to_thread(ip_library.project_ip, task_id)
+    return {"profile": ip_library.public_profile(profile)}

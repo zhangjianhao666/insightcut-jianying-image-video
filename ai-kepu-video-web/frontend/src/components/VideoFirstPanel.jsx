@@ -252,16 +252,20 @@ export function VideoFirstPanel({ taskId, segments = [], ratio = '16:9', product
           </div>)}
         </div>
         <div className="h3-reference-item">
-          <strong>固定声音参考（可选）</strong>
-          <span>{h3Reference.voice_ready ? '已上传 2～15 秒声音样本' : '未上传声音参考；模型可自由生成原生声音'}</span>
+          <strong>项目声音参考（可选覆盖 IP 声音）</strong>
+          <span>{h3Reference.voice_ready
+            ? h3Reference.voice_source === 'ip'
+              ? `使用已绑定 IP 的声音版本 ${h3Reference.voice_version}`
+              : '使用本项目上传的声音样本'
+            : '未设置声音参考；模型使用统一声线描述生成原生讲解'}</span>
           <input aria-label="上传固定声音参考 WAV" type="file" accept=".wav,audio/wav"
             disabled={referencesLocked}
             onChange={event => {
               void uploadH3('/voice', event.target.files?.[0])
               event.target.value = ''
             }}/>
-          {h3Reference.voice_ready ? <button type="button" disabled={referencesLocked}
-            onClick={() => { void updateH3('delete', '/voice') }}>移除声音样本</button> : null}
+          {h3Reference.voice_source === 'project' ? <button type="button" disabled={referencesLocked}
+            onClick={() => { void updateH3('delete', '/voice') }}>移除项目覆盖，恢复 IP 声音</button> : null}
           <small>仅支持单/双声道 PCM WAV，2～15 秒，8 MB 以内。引用音色不能保证逐字准确或口型同步。</small>
         </div>
         {referenceError ? <p role="alert">{referenceError}</p> : null}

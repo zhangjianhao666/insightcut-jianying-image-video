@@ -20,6 +20,7 @@ from pathlib import Path
 from src.config import Config
 from src.media import h3_references, shot_video_jobs
 from src.text.storyboard_director import DEFAULT_MOTION_PROMPT, load_plan, lookup_shot
+from src.text.native_dialogue import compile_video_prompt
 from src.text.continuity import compose_motion_prompt
 from src.utils.rendering import normalize_ratio
 
@@ -120,6 +121,9 @@ def _shot_inputs(task_id, segments, ratio, duration):
         reference_assets = h3_references.for_shot(
             task_id, image, direction.get("scene_id") or "",
         )
+        motion_prompt = compile_video_prompt(
+            task_id, segment.get("text"), motion_prompt, reference_assets, shot_video_jobs._video_config(),
+        )
         result.append({
             "reference_assets": reference_assets,
             "reference_fingerprint": (reference_assets or {}).get("fingerprint", "first_frame"),
@@ -188,8 +192,12 @@ def _current(task_id, segments, ratio=None):
                                                      or DEFAULT_MOTION_PROMPT)
                               if current_direction else DEFAULT_MOTION_PROMPT)
             try:
-                actual_refs = h3_references.fingerprint_now(
+                current_references = h3_references.for_shot(
                     task_id, seg["image_path"], current_direction.get("scene_id") or "",
+                )
+                actual_refs = (current_references or {}).get("fingerprint", "first_frame")
+                current_prompt = compile_video_prompt(
+                    task_id, shot_text, current_prompt, current_references, shot_video_jobs._video_config(),
                 )
             except (OSError, ValueError):
                 actual_refs = "invalid"

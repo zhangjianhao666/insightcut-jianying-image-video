@@ -27,6 +27,8 @@ export function IpProfilePicker({ value, onChange }) {
   const [editId, setEditId] = useState('')
   const [form, setForm] = useState(empty)
   const [image, setImage] = useState(null)
+  const [voice, setVoice] = useState(null)
+  const [removeVoice, setRemoveVoice] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   useEffect(() => {
@@ -42,6 +44,8 @@ export function IpProfilePicker({ value, onChange }) {
     setEditId(profile?.ip_id || '')
     setForm(profile ? Object.fromEntries(inputs.map(([field]) => [field, profile[field] || ''])) : { ...empty })
     setImage(null)
+    setVoice(null)
+    setRemoveVoice(false)
     setError('')
     setEditing(true)
   }
@@ -69,12 +73,23 @@ export function IpProfilePicker({ value, onChange }) {
         })
         updated = response.profile
       }
+      if (voice || removeVoice) {
+        const body = new FormData()
+        if (voice) body.append('file', voice)
+        const response = await request({
+          url: `${BASE}/ip-profiles/${encodeURIComponent(profile.ip_id)}/voice-reference`,
+          method: voice ? 'post' : 'delete',
+          ...(voice ? { data: body, headers: { 'Content-Type': undefined } } : {}),
+          suppressToast: true,
+        })
+        updated = response.profile
+      }
       setProfiles(current => [...current.filter(p => p.ip_id !== updated.ip_id), updated]
         .sort((a, b) => a.name.localeCompare(b.name)))
       onChange(updated.ip_id, updated)
       setEditing(false)
     } catch {
-      setError('IP 保存失败，请检查表单或参考图格式')
+      setError('IP 保存失败，请检查表单、参考图或声音样本格式（PCM WAV，2～15 秒，最多 8 MB）')
     } finally {
       setBusy(false)
     }
@@ -91,6 +106,7 @@ export function IpProfilePicker({ value, onChange }) {
       </option>)}
     </select>
     {selected ? <small>已选择「{selected.name}」· 将固定人设、讲述口吻、画面形象{selected.reference_image ? '和参考图' : ''}</small> : null}
+    {selected?.voice_reference_ready ? <small>已保存 IP 原生声音样本 · 声音版本 {selected.voice_reference_version}，新项目自动继承</small> : null}
     <div className="button-row">
       <button type="button" className="button button-secondary" onClick={() => beginEdit(null)}>新建 IP</button>
       {selected ? <button type="button" className="button button-secondary" onClick={() => beginEdit(selected)}>编辑 IP 设定</button> : null}
@@ -105,6 +121,18 @@ export function IpProfilePicker({ value, onChange }) {
       <label><span>固定形象参考图（JPG/PNG/WEBP，建议清晰正面图）</span>
         <input type="file" accept="image/jpeg,image/png,image/webp" onChange={event => setImage(event.target.files?.[0] || null)} />
       </label>
+      <label><span>固定原生声音样本（PCM WAV，2～15 秒，最多 8 MB）</span>
+        <input aria-label="IP 固定声音样本 WAV" type="file" accept=".wav,audio/wav" onChange={event => {
+          setVoice(event.target.files?.[0] || null)
+          setRemoveVoice(false)
+        }} />
+      </label>
+      {profiles.find(profile => profile.ip_id === editId)?.voice_reference_ready && !removeVoice
+        ? <button type="button" className="button button-secondary" onClick={() => {
+          setVoice(null)
+          setRemoveVoice(true)
+        }}>移除 IP 声音样本（保存后生效）</button> : null}
+      {removeVoice ? <small>保存后新项目不再继承声音样本；已有项目保留其声音版本。</small> : null}
       {error ? <small role="alert">{error}</small> : null}
       <div className="button-row">
         <button type="button" className="button button-secondary" onClick={() => setEditing(false)}>取消</button>
@@ -112,6 +140,6 @@ export function IpProfilePicker({ value, onChange }) {
       </div>
     </div> : null}
     {!editing && error ? <small role="alert">{error}</small> : null}
-    <small>选择 IP 后每期视频会固定一个版本；生成分镜时继承 IP 设定，百炼生图会参考已上传的形象图。</small>
+    <small>选择 IP 后每期视频固定一个版本。H3 参考模式会继承该版本的声音样本，各分镜使用同一音色参考讲述新台词。</small>
   </fieldset>
 }

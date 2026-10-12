@@ -254,6 +254,11 @@ async def serve_media(file_path: str):
         if media_root not in requested.parents and requested != media_root:
             continue
 
+        # IP snapshots can contain private voice paths; serve their sanitized
+        # API representations, never the raw metadata through /media.
+        if "_ip_library" in requested.relative_to(media_root).parts and requested.suffix.lower() == ".json":
+            continue
+
         # 如果文件存在，返回它
         if requested.is_file():
             return FileResponse(

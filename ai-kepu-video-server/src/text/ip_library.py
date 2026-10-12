@@ -15,6 +15,7 @@ from pathlib import Path
 from PIL import Image, UnidentifiedImageError
 
 from src.config import Config
+from src.media.voice_reference import validate_voice_sample
 
 
 _LOCK = threading.RLock()
@@ -90,6 +91,8 @@ def save_profile(data, ip_id=None):
         profile["ip_id"] = ident
         profile["version"] = int(previous.get("version") or 0) + 1
         profile["reference_image"] = previous.get("reference_image")
+        profile["reference_voice"] = previous.get("reference_voice")
+        profile["voice_reference_version"] = previous.get("voice_reference_version", 0)
         profiles[ident] = profile
         _write(_profiles_path(), profiles)
         return dict(profile)
@@ -127,6 +130,50 @@ def save_reference(ip_id, image_bytes):
         profiles[ip_id] = updated
         _write(_profiles_path(), profiles)
         return dict(updated)
+
+
+def save_voice_reference(ip_id, data):
+    validate_voice_sample(data)
+    with _LOCK:
+        profiles = _load()
+        if ip_id not in profiles:
+            raise KeyError(ip_id)
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", str(ip_id)):
+            raise ValueError("非法 IP ID")
+        path = Config.BASE_DIR / "data" / "_private" / "ip_voices" / str(ip_id) / f"{uuid.uuid4().hex}.wav"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+        updated = dict(profiles[ip_id])
+        updated["reference_voice"] = str(path)
+        updated["voice_reference_version"] = int(updated.get("voice_reference_version") or 0) + 1
+        updated["version"] += 1
+        profiles[ip_id] = updated
+        _write(_profiles_path(), profiles)
+        return dict(updated)
+
+
+def clear_voice_reference(ip_id):
+    with _LOCK:
+        profiles = _load()
+        if ip_id not in profiles:
+            raise KeyError(ip_id)
+        updated = dict(profiles[ip_id])
+        updated["reference_voice"] = None
+        updated["voice_reference_version"] = int(updated.get("voice_reference_version") or 0) + 1
+        updated["version"] += 1
+        profiles[ip_id] = updated
+        _write(_profiles_path(), profiles)
+        # Versioned files stay available to old project snapshots.
+        return dict(updated)
+
+
+def public_profile(profile):
+    if not profile:
+        return None
+    result = dict(profile)
+    voice = result.pop("reference_voice", None)
+    result["voice_reference_ready"] = bool(voice and Path(voice).is_file())
+    return result
 
 
 def bind_project(task_id, ip_id):

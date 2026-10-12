@@ -1,5 +1,7 @@
 # AI 长视频一致性导演设计方案 v0.1
 
+> 更新：H3 原生讲解与 IP 声音版本继承已实现，详见第 11 节；早期“讲述只能交给独立音轨”的路线不再作为 H3 默认方案。真实参考音色效果仍需付费样片验收。
+
 状态：**已部分实现，仍需真实多镜头成片验收**  
 适用分支：`codex/wan-i2v-shot-closure`；基础代码采用当前 fork 的 **MiniMax-H3 / 海螺 / Wan、IP 角色库、视频优先流水线**，不回退成上游的「图片+TTS」静态视频。
 
@@ -215,3 +217,13 @@ npm run build
 依据：MiniMax 官方 [V2 创建任务](https://platform.minimax.io/docs/api-reference/video-generation-v2-create)、[V2 查询任务](https://platform.minimax.io/docs/api-reference/video-generation-v2-query)。
 
 现存 CI 阻塞另有**依赖安全审计**：Python `multidict 6.8.0`（修复线 6.9.1）、`urllib3 2.7.0`（修复线 2.8.0）；前端 `brace-expansion 5.0.9`、`source-map-js 1.2.1`、`undici 8.10.0` 被高危告警命中。不要手动篡改带 SHA256 的 Python lock 或 npm integrity；使用各自受支持的锁文件生成工具重新锁定并跑完整 CI，再决定合并 PR。
+
+## 11. 固定 IP 声音与原生对白自动编译
+
+- IP 编辑器支持上传和移除 2–15 秒、最多 8 MB 的 PCM WAV。文件保存在 `data/_private/ip_voices/`，每次上传生成新文件与声音版本。新项目绑定当前 IP 版本，旧项目继续使用原快照；更改或移除角色库声音不删除旧文件。
+- `POST/DELETE /ai/native/video/kepu/ip-profiles/{ip_id}/voice-reference` 管理声音；公开 API 只返回就绪状态和版本，不返回声音路径。`/media` 禁止下载 IP 原始 JSON 元数据。
+- H3 参考模式按「项目上传覆盖 → 已绑定 IP 声音快照 → 无声音参考」解析。移除项目覆盖恢复 IP 快照，缺失的已选择样本阻止生成，不悄悄降级到自由声音。
+- `src/text/native_dialogue.py` 为 H3 整片和单镜头统一编译原生对白：固定说话人 `(S1)`、IP 的讲述风格、实际 `<Audio 1>` 音色参考与当前分镜准确原文。只参考音色，不复制样本旧台词。说话人标记是提示词约定，不是服务商持久化 voice ID。
+- 准确台词置于提示词前部且不截断；视觉约束过长时为具体动作预留空间。台词超出预算或包含对白控制标签时，在提交付费任务前拒绝。旧海螺/Wan 不添加这类对白。
+- 导演计划升为 v4：H3 描述自然讲话表演，不再禁止口型或要求独立配音；台词由确定性编译器添加，避免 LLM 改写。需要新版规划时应重新生成预案，已有媒体仍保留。
+- 本轮覆盖版本快照、上传校验、私有元数据、项目覆盖优先级、实际单镜头提交参数和台词预算的离线测试；不宣称已经验证模型真实声纹一致性、对白准确率或自动字幕。没有自动提交付费任务。

@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 from src.database import mysql_client
 from src.media import h3_references, shot_video_jobs
 from src.text.storyboard_director import load_plan, lookup_shot
+from src.text.native_dialogue import compile_video_prompt
 from src.text.continuity import compose_motion_prompt
 from src.media.minimax_i2v import MinimaxVideoError
 from src.media.wan_i2v import WanVideoError
@@ -88,6 +89,9 @@ async def generate_shot_video(
         references = await asyncio.to_thread(
             h3_references.for_shot, task_id, segment["image_path"],
             direction.get("scene_id") or "",
+        )
+        composed_prompt = compile_video_prompt(
+            task_id, segment.get("text"), composed_prompt, references, shot_video_jobs._video_config(),
         )
         kwargs = {"duration": data.duration, "force_new": data.force_new}
         if references is not None:
