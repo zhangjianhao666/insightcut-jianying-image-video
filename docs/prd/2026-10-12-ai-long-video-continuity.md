@@ -141,3 +141,61 @@ npm run build
 ```
 
 **完成定义**：CI 通过 + 至少一组真实连续镜头已经过人工验收，才可以宣布 Video-first 的镜头衔接改善已验证。本次代码提交/Mock 测试不能代替真实万相或 MiniMax 成片质量验证。
+
+
+## 9. MiniMax H3 多模态参考生成（2026-10-12 实现更新）
+
+依据官方 [MiniMax H3 V2 API](https://platform.minimax.io/docs/api-reference/video-generation-v2-create) 和 [Video Generation Guide](https://platform.minimax.io/docs/guides/video-generation)：
+
+**重要互斥约束**：`first_frame/last_frame` 与 `reference_image/reference_video/reference_audio` **不能混在一次请求中**。本项目默认 `first_frame`，需要跨镜头外观和音色参考时由用户明确切换 `reference`，因此不承诺输出第 0 帧完全复制原分镜首帧。
+
+### 最小改造（已提交开发分支）
+
+- `src/media/h3_references.py`：每项目独立的轻量参考设置；基于现有 `scene_id`，各场景共享一张 JPEG 参考图；自动复用已绑定 IP 的参考图；可另存一段**可选**固定 PCM WAV 声音样本。文件全部保存在本机数据目录，不要求额外 COS 或公网托管。
+- `src/api/h3_reference_routes.py`：GET/PUT 模式、按场景上传/移除参考图、上传/移除声音样本；仅本地文件校验与保存，不产生 MiniMax 生成费用。参考图支持 JPEG/PNG/WebP，限制原文件 12MB、尺寸 256–5760、宽高比 0.4–2.5；声音限制单/双声道 PCM WAV、2–15 秒、8MB。
+- `src/media/minimax_i2v.py`：H3 系列按 API 的 `content[].role` 创建请求：首帧模式 `first_frame`；参考模式依次发送 `reference_image`（当前分镜图、系列 IP 图、共享场景图），和可选 `reference_audio`。素材使用有界 Base64 data URI，严格限制请求体 ≤64MB；H3-Max 不允许 2K 或 4 秒时长。参考模式没有 `first_frame`。
+- `src/media/shot_video_jobs.py` 与 `video_first.py`：整片和单镜头两条路径共享参考资产快照与内容指纹。更换场景图片、IP 参考或声音文件后，**旧片段视为已过期**；只有用户再次显式确认付费时才提交新的生成任务。模式切换不会自动触发 API。
+- `src/components/VideoFirstPanel.jsx`：工作台「H3 跨镜头参考」折叠设置，按场景上传图片、上传固定声音样本或移除。可对比首帧模式与参考模式，显示支持情况。既不上传用户 API 密钥，也不把素材发布到公网。
+- H3 API **不会自动跨请求记忆**。每个分镜都显式携带所需参考；镜头自有的分镜图只作为**构图参考**，场景/IP 图和 WAV 才是共享约束。
+
+### 实际 API 参数例子（结构示意）
+
+```json
+{
+  "model": "MiniMax-H3",
+  "content": [
+    {
+      "type": "text",
+      "text": "Use Image 1 as this shot's composition, Image 2 as fixed IP, Image 3 as the scene. Use Audio 1 as a voice reference. The character turns toward the window."
+    },
+    { "type": "image_url", "image_url": { "url": "data:image/png;base64,..." }, "role": "reference_image" },
+    { "type": "image_url", "image_url": { "url": "data:image/jpeg;base64,..." }, "role": "reference_image" },
+    { "type": "image_url", "image_url": { "url": "data:image/jpeg;base64,..." }, "role": "reference_image" },
+    { "type": "audio_url", "audio_url": { "url": "data:audio/wav;base64,..." }, "role": "reference_audio" }
+  ],
+  "duration": 6,
+  "resolution": "768P",
+  "ratio": "16:9"
+}
+```
+
+这是一份**Mock 校验的结构**，不是用户 API Key 的真实调用结果。真实 H3 生成接口的声音效果、参考权重、对白准确性，以及 data URI 在用户账号与地域上的可用性，仍需用户本机小样测试。接口报错时不自动退回无参考模式，以免无声/画面漂移却仍产生额外费用。
+
+### 最小手工验收
+
+1. 在「API 配置」选择 **MiniMax-H3（或 H3-Max）**，保证自己的 API Key 额度可用。
+2. 生成含 3 个同场景镜头的分镜，上传同一场景基准图；如项目已经绑定带图的 IP，会自动复用其固定参考图。
+3. 可选上传 2–15 秒、WAV PCM 格式的干净声音样本；不上传时不承诺音色一致性。
+4. 先用 **首帧模式**生成一个镜头验证镜头控制；另用 **H3 参考模式**生成 2～3 个同场景镜头观察角色/场景/声音稳定程度。模型费用需用户明确确认。
+5. 分别检查角色长相、衣服、背景布局、声音特色和语音内容是否稳定；对比同一镜头的首帧位置是否在参考模式出现预期变化。
+6. 更换同一场景图片或声音样本，检查旧镜头标记过期，不能复用旧 MP4；已完成片段不会被自动删除。
+7. 执行离线回归 `python -m pytest -q tests/test_h3_references.py tests/test_minimax_i2v.py tests/test_video_first.py`，并运行前端构建。
+
+### 当前暂不支持
+
+- 直接在同一请求同时指定首帧和角色/场景/声音参考（MiniMax 官方禁止）。
+- API 原生视频续写与任意 `reference_video` 上传（以后按真实供应商模型版本支持情况扩展）。
+- 全片多人、多音色对白分轨与准确口型/字幕同步；单一 WAV 仅作为 H3 的音色/声音参考，并非 TTS 强制合成，也不保证逐字一致。
+- 自动调色、自动演员脸部质量分数与自动修复。
+
+**边界**：这一阶段只做多分镜共享参考的轻量编排，不扩展为完整数字演员、AI 场记或大型长视频平台。
