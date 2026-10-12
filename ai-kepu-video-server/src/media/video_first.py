@@ -135,7 +135,7 @@ def _shot_inputs(task_id, segments, ratio, duration):
             "motion_prompt": motion_prompt[:1800],
             "scene_id": direction.get("scene_id") or "",
             "transition_to_next": direction.get("transition_to_next") or "cut",
-            "duration": duration,
+            "duration": direction.get("duration") if direction.get("duration") in options else duration,
         })
     return result
 

@@ -1,5 +1,11 @@
 import { isLlmProviderReady } from './llmProviderCatalog.js'
 
+export const MINIMAX_IMAGE_PRESET = {
+  api_url: 'https://api.minimax.cn/v1/image_generation',
+  model: 'image-01',
+  size: 'auto',
+}
+
 export const WAN_IMAGE_PRESET = {
   model: 'wan2.7-image',
   size: 'auto',
@@ -187,7 +193,7 @@ export function normalizeConfig(config = {}) {
     },
     image: {
       ...(source.image || {}),
-      provider: source.image?.provider === 'wan' ? 'wan' : 'agnes',
+      provider: ['wan', 'minimax'].includes(source.image?.provider) ? source.image.provider : 'agnes',
       api_url: source.image?.api_url || '',
       api_key: source.image?.api_key || '',
       model: source.image?.model || '',
@@ -245,6 +251,10 @@ export function restoreAgnesPreset(config) {
 }
 
 export function chooseImageProvider(config, provider) {
+  if (provider === 'minimax') {
+    return { ...config, image: { ...config.image, ...MINIMAX_IMAGE_PRESET,
+      provider, api_key: config.video?.provider === 'minimax' ? config.video.api_key || '' : '' } }
+  }
   if (provider === 'wan') {
     return {
       ...config,

@@ -108,11 +108,18 @@ class ImageGenerator:
         output_stem = filename or f"segment_{index:03d}_{uuid.uuid4().hex}"
 
         # 组合 prompt + 风格
-        suffix = (style_suffix or "").strip() or STYLE_PRESETS.get(style, STYLE_PRESETS["写实风格"])
+        suffix = (style_suffix or "").strip() or STYLE_PRESETS.get(style, str(style or "").strip() or STYLE_PRESETS["写实风格"])
         full_prompt = f"{prompt}, {suffix}"
 
         if not self.api_key:
             raise ValueError("图像生成 API Key 未配置")
+
+        if self.provider == "minimax":
+            from src.media.minimax_image import MiniMaxImageGenerator
+            client = MiniMaxImageGenerator(self.api_key, self.api_url, self.model)
+            path = client.generate(full_prompt, width, height, self.output_dir / f"{output_stem}.png",
+                                   reference_image=getattr(self, "reference_image", None))
+            return GeneratedImagePath(path, requested_prompt=full_prompt, submitted_prompt=full_prompt, fallback_used=False)
 
         if self.provider == "wan":
             # Wan uses a different response schema than OpenAI images/generations.

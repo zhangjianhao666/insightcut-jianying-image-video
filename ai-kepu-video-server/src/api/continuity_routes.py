@@ -81,6 +81,8 @@ def _report(task_id):
             "scene_id": shot.get("scene_id") or "",
             "character_ids": shot.get("character_ids") or [],
             "location_id": shot.get("location_id") or "",
+            "duration": shot.get("duration"),
+            "purpose": shot.get("purpose") or "",
             "camera": shot.get("camera") or "",
             "start_state": shot.get("start_state") or "",
             "end_state": shot.get("end_state") or "",

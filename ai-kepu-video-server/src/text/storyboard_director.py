@@ -41,8 +41,10 @@ def enforce_visual_consistency(prompt: str, bible: dict) -> str:
         ("Art direction and color palette", "art_direction"),
         ("Avoid", "negative_rules"),
     ]
+    minimax = Config.image_config().get("provider") == "minimax"
+    lock_limit = 120 if minimax else 250
     details = [
-        f"{label}: {str(bible[key])[:250]}"
+        f"{label}: {str(bible[key])[:lock_limit]}"
         for label, key in locks if bible.get(key)
     ]
     full = str(prompt or "").strip()[:3000]
@@ -106,6 +108,8 @@ def _normalize_plan(raw, count):
         shots[str(index)] = {
             "image_prompt": image_prompt,
             "motion_prompt": motion_prompt or DEFAULT_MOTION_PROMPT,
+            **({"duration": shot["duration"]} if type(shot.get("duration")) is int and 4 <= shot["duration"] <= 15 else {}),
+            "purpose": str(shot.get("purpose") or "")[:400],
             "shot_type": str(shot.get("shot_type") or "scene")[:50],
             **normalize_shot(shot, index),
         }
@@ -157,7 +161,7 @@ def record_planning_failure(task_id, *, stage, category, segments):
     log.warning("[%s] 分镜导演规划失败 stage=%s category=%s", task_id, stage, category)
 
 
-def plan_storyboard(task_id, generator, *, script, segments, summary, style, ratio, force=False):
+def plan_storyboard(task_id, generator, *, script, segments, summary, style, ratio, force=False, outline=None, target_duration=None):
     """Build once per text/style revision. On model failure, caller falls back
     to individual image prompts. This must not erase existing shot assets.
     """
@@ -170,7 +174,15 @@ def plan_storyboard(task_id, generator, *, script, segments, summary, style, rat
         str((ip_profile or {}).get("ip_id") or "")
         + ":" + str((ip_profile or {}).get("version") or "")
     )
-    fingerprint = _signature(script, segments, summary, style + profile_fingerprint, ratio)
+    saved = load_plan(task_id) or {}
+    if outline is None and saved.get("segments") == list(segments):
+        outline = saved.get("outline")
+        old_shots = saved.get("shots") or {}
+        if not outline and len(old_shots) == len(segments) and all(type(v.get("duration")) is int and 4 <= v["duration"] <= 15 for v in old_shots.values()):
+            outline = [{"text": text, "duration": old_shots[str(i)]["duration"],
+                        "purpose": old_shots[str(i)].get("purpose") or old_shots[str(i)].get("camera") or ""}
+                       for i, text in enumerate(segments)]
+    fingerprint = _signature(script, segments, summary, style + profile_fingerprint + (json.dumps(outline, ensure_ascii=False) if outline else "") + (str(target_duration) if target_duration else ""), ratio)
     previous = load_plan(task_id)
     if (not force and previous and previous.get("fingerprint") == fingerprint
             and previous.get("status") != "failed"
@@ -198,7 +210,7 @@ def plan_storyboard(task_id, generator, *, script, segments, summary, style, rat
         "camera(景别/机位/轴线)、start_state(该镜头开场角色位置/手部/视线/道具状态)、"
         "end_state(镜头结束状态)、transition_to_next(cut/match_cut/continue 之一)、"
         "shot_type(scene/portrait/diagram/transition)、"
-        "image_prompt(英文35-80词：主体/景别/机位/光线/角色标识)、"
+        "image_prompt(英文35-60词：主体/景别/机位/光线/角色标识)、"
         "motion_prompt(中文150-400字：主角动作与运镜、光影和环境，不含口播台词)。"
         "motion_prompt 分四段用分号隔开：① 开场状态与视觉约束；② 动作顺序与速度；"
         "③ [Push in]、[Pan left]、[Tracking shot] 或 [Static shot] 等运镜；"
@@ -233,22 +245,31 @@ def plan_storyboard(task_id, generator, *, script, segments, summary, style, rat
         f"{instructions}\n画风：{style[:250]}\n画幅：{ratio}\n全文总结：{summary[:650]}"
         f"\n分镜编号与对应旁白：{json.dumps(excerpt, ensure_ascii=False)}"
         + ip_prompt
+        + (f"\nshots 每镜还必须包含duration（4至15秒整数），全部duration之和必须是{target_duration}秒。" if target_duration else "")
+        + ("\n导演已决定的逐镜时长与意图（必须遵守，不改台词）：" + json.dumps(outline, ensure_ascii=False) if outline else "")
     )
     error = None
     stage = "provider"
     validation_category = "incomplete_shots"
     try:
+        if ip_profile and ip_profile.get("reference_image") and not (ip_profile.get("visual_identity") and ip_profile.get("outfit")):
+            stage = "validation"
+            validation_category = "reference_identity_missing"
+            raise ValueError("IP参考图已绑定，但外观和服装文字约束不完整")
         raw = generator._call_api(
             messages=[{"role": "user", "content": payload}],
             # The budget includes reasoning as well as JSON output. The current
             # DeepSeek model exhausted 4000 tokens before completing two shots.
             # Keep room for detailed motion scripts and scale with shot count.
-            max_tokens=min(16000, max(8000, 1000 * min(len(segments), 12))) if compact else 4000,
+            max_tokens=min(32768, max(8000, 2200 * min(len(segments), 12))) if compact else 8000,
         )
         stage = "parse"
         source = _json_object(raw)
         parsed = _normalize_plan(source, len(segments))
         stage = "validation"
+        if target_duration and not outline:
+            if sum(shot.get("duration", 0) for shot in parsed["shots"].values()) != target_duration:
+                raise ValueError("invalid_duration_budget")
         if compact and set(parsed["shots"]) != {str(i) for i in range(len(segments))}:
             raise ValueError("incomplete_shots")
         if compact:
@@ -277,9 +298,67 @@ def plan_storyboard(task_id, generator, *, script, segments, summary, style, rat
         "version": _PLAN_VERSION, "fingerprint": fingerprint,
         "status": "failed" if error else "completed", "error": error,
         "ip_id": (ip_profile or {}).get("ip_id"),
-        "segments": list(segments), "visual_bible": parsed["visual_bible"],
+        "segments": list(segments), "outline": outline, "visual_bible": parsed["visual_bible"],
         "shots": parsed["shots"],
     }
+    if outline and not error:
+        for i, item in enumerate(outline):
+            record["shots"][str(i)].update(duration=item["duration"], purpose=item["purpose"])
     record["continuity_warnings"] = audit_plan(record)
     _write(task_id, record)
     return record
+
+
+def direct_segments(generator, script, *, target_duration=None):
+    """Let the existing director assign narration boundaries before image planning.
+
+    Only whitespace may change: no model-authored omissions or new dialogue can
+    silently enter the approved script. A failed proposal is never substituted
+    with short subtitle chunks.
+    """
+    import math
+    target = int(target_duration or max(4, math.ceil(len(re.sub(r'\s+', '', script)) / 4)))
+    if target > 180:
+        raise ValueError("当前原生视频流程单次最多规划 180 秒，请缩短文稿")
+    prompt = (
+        "你是科普动画导演。请根据完整文稿决定分镜边界与逐镜时长，而不是按固定字数切句。"
+        "每镜表达一个清晰的信息或动作，可用人物中景、食材特写、俯拍示范、无文字示意图；"
+        "避免重复构图。不要把每一句话独立成镜，完整解释可以跨几句话。"
+        "返回纯JSON：{\"shots\":[{\"text\":\"原文连续片段\",\"duration\":10,\"purpose\":\"本镜讲述目的和画面意图\"}]}。"
+        "所有text按顺序拼接必须等于原文（仅允许空白变化），不得改写、删减、添加台词。"
+        "duration是4到15秒整数，适合自然语速和动作；一般每秒3至5个中文字，留出停顿。"
+        "最多12镜，所有duration之和必须等于目标秒数。根据内容选不同镜头时长，不必等长。"
+        f"目标时长：{target}秒。完整原文：\n{script}"
+    )
+    last_error = None
+    for attempt in range(2):
+        messages = [{"role": "user", "content": prompt}]
+        if last_error:
+            messages.append({"role": "user", "content": "上一方案未通过校验：" + last_error + "。请重新完整设计。"})
+        try:
+            raw = _json_object(generator._call_api(messages=messages, max_tokens=16000))
+            shots = raw.get("shots")
+            if not isinstance(shots, list) or not 1 <= len(shots) <= 12:
+                raise ValueError("镜头数必须是1至12")
+            result = []
+            for item in shots:
+                duration = item.get("duration")
+                if type(duration) is not int or not 4 <= duration <= 15:
+                    raise ValueError("每镜时长必须是4至15秒整数")
+                if not isinstance(item.get("text"), str) or not item["text"].strip() or not item.get("purpose"):
+                    raise ValueError("每镜必须有完整原文和画面意图")
+                result.append({"text": item["text"].strip(), "duration": duration, "purpose": str(item["purpose"])[:400]})
+            clean = lambda value: re.sub(r"\s+", "", value)
+            if clean("".join(item["text"] for item in result)) != clean(script):
+                raise ValueError("分镜文本没有完整保留原文与顺序")
+            if sum(item["duration"] for item in result) != target:
+                raise ValueError("总时长不等于目标时长")
+            return result
+        except (ValueError, TypeError, KeyError, AttributeError) as failure:
+            last_error = str(failure) if isinstance(failure, ValueError) else "分镜结构错误"
+    raise ValueError("导演分镜边界规划失败，请重新生成预案")
+
+
+def save_director_outline(task_id, outline):
+    _write(task_id, {"version": _PLAN_VERSION, "status": "planning",
+                     "segments": [item["text"] for item in outline], "outline": outline, "shots": {}})

@@ -90,7 +90,11 @@ def _run_completion_with_retries(completion, kwargs, generation_config=None):
         _wait_for_llm_throttle()
         try:
             response = completion(**kwargs)
-            return response.choices[0].message.content, None
+            choice = response.choices[0]
+            content = choice.message.content
+            if getattr(choice, "finish_reason", None) == "length" or not str(content or "").strip():
+                raise ValueError("模型输出为空或因长度限制截断")
+            return content, None
         except Exception as error:
             safe_error = classify_exception(error, provider="llm")
             if safe_error.code is ErrorCode.UNKNOWN:
@@ -179,7 +183,7 @@ class ArticleGenerator:
             "model": self._build_litellm_model(),
             "messages": messages,
             "max_tokens": max_tokens,
-            "timeout": 90,
+            "timeout": 180,
         }
         if self.api_key:
             kwargs["api_key"] = self.api_key

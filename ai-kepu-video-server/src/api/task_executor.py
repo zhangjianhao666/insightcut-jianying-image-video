@@ -1907,14 +1907,29 @@ class TaskExecutor:
             if cancellation:
                 cancellation.raise_if_cancelled()
 
-            # 步骤 2: 短节奏分段，约 20 字一段，对应更密的画面切换
+            director_outline = None
+            from src.media.minimax_i2v import is_h3_model
+            video_config = Config.load_model_config().get("video") or {}
+            native_director = (task_row.get("execution_mode") == "review_first"
+                               and video_config.get("provider") == "minimax"
+                               and is_h3_model(video_config.get("model")))
+            # H3 narration shots are semantic director decisions, not subtitle chunks.
             logger.info(f"[{task_id}] [2/6] 开始短节奏分段...")
             task.current_step = "segmentation"
             db_client.update_task_status(task_id, "processing", "segmentation")
             if persisted_segments:
                 pipeline.segments = [row["text"] for row in persisted_segments]
             else:
-                pipeline.segments = pipeline.text_segmenter.split(pipeline.article)
+                if native_director:
+                    from src.text.storyboard_director import direct_segments, save_director_outline
+                    director_outline = direct_segments(
+                        pipeline.article_generator, pipeline.article,
+                        target_duration=_task_generation_options(task_row).get("target_duration_seconds"),
+                    )
+                    save_director_outline(task_id, director_outline)
+                    pipeline.segments = [item["text"] for item in director_outline]
+                else:
+                    pipeline.segments = pipeline.text_segmenter.split(pipeline.article)
                 initial_segments = [
                     {
                         "segment_index": i,
@@ -1971,7 +1986,11 @@ class TaskExecutor:
                     summary=pipeline.summary,
                     style=visual_prompt_style,
                     ratio=ratio,
+                    outline=director_outline,
+                    target_duration=_task_generation_options(task_row).get("target_duration_seconds") if native_director else None,
                 )
+                if native_director and (plan.get("status") == "failed" or len(plan.get("shots") or {}) != len(pipeline.segments)):
+                    raise ValueError("导演逐镜规划未完成；预案已保留，请重新规划")
                 planned_shots = plan.get("shots") or {}
                 visual_bible = plan.get("visual_bible") or {}
 

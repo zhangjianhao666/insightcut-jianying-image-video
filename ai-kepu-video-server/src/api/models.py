@@ -47,6 +47,7 @@ class SubtitleOptions(BaseModel):
 class GenerationOptions(BaseModel):
     """任务级生成策略；只影响后续生成操作。"""
 
+    target_duration_seconds: Optional[int] = Field(None, ge=4, le=3600)
     prompt_concurrency: int = Field(4, ge=1, le=8)
     image_concurrency: int = Field(8, ge=1, le=8)
     retry_count: int = Field(2, ge=0, le=5)

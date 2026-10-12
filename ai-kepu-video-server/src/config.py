@@ -122,19 +122,19 @@ class Config:
                 "provider_options": {},
             },
             "image": {
-                "provider": cls.IMAGE_PROVIDER if cls.IMAGE_PROVIDER in {"wan", "agnes"} else "agnes",
-                "api_url": (
+                "provider": cls.IMAGE_PROVIDER if cls.IMAGE_PROVIDER in {"wan", "agnes", "minimax"} else "agnes",
+                "api_url": _env("MINIMAX_IMAGE_API_URL", "https://api.minimax.cn/v1/image_generation") if cls.IMAGE_PROVIDER == "minimax" else (
                     cls.WAN_IMAGE_API_URL
                     or _env("DASHSCOPE_BASE_URL")
                     or cls.LLM_BASE_URL
                     or "https://dashscope.aliyuncs.com/api/v1"
                 ) if cls.IMAGE_PROVIDER == "wan" else cls.SEEDREAM_API_URL,
-                "api_key": (
+                "api_key": _env("MINIMAX_API_KEY") if cls.IMAGE_PROVIDER == "minimax" else (
                     cls.WAN_IMAGE_API_KEY
                     or _env("DASHSCOPE_API_KEY")
                     or cls.LLM_API_KEY
                 ) if cls.IMAGE_PROVIDER == "wan" else cls.SEEDREAM_API_KEY,
-                "model": cls.WAN_IMAGE_MODEL if cls.IMAGE_PROVIDER == "wan" else cls.SEEDREAM_MODEL,
+                "model": "image-01" if cls.IMAGE_PROVIDER == "minimax" else cls.WAN_IMAGE_MODEL if cls.IMAGE_PROVIDER == "wan" else cls.SEEDREAM_MODEL,
                 "size": _env("WAN_IMAGE_SIZE", "auto") if cls.IMAGE_PROVIDER == "wan"
                         else _env("SEEDREAM_SIZE", "auto"),
             },

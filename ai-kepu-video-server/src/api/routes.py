@@ -212,6 +212,8 @@ def _normalize_subtitle_options(value: Optional[dict]) -> dict:
 def _normalize_generation_options(value: Optional[dict]) -> dict:
     value = value or {}
     return {
+        "target_duration_seconds": (max(4, min(3600, int(value["target_duration_seconds"])))
+                                    if value.get("target_duration_seconds") else None),
         "prompt_concurrency": max(1, min(8, int(value.get("prompt_concurrency") or 4))),
         "image_concurrency": max(1, min(8, int(value.get("image_concurrency") or 8))),
         "retry_count": max(0, min(5, int(value.get("retry_count") if value.get("retry_count") is not None else 2))),

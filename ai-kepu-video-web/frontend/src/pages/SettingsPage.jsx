@@ -244,7 +244,7 @@ export function SettingsPage({ embedded = false, onClose }) {
     const mimoReady = !mimoEnabled || Boolean(form.tts.mimo.base_url && form.tts.mimo.api_key && form.tts.mimo.model && form.tts.mimo.clone_model && form.tts.mimo.default_voice)
     return [
       { label: '生文 API', ready: llmReady, detail: llmReady ? form.llm.model : '配置不完整' },
-      { label: form.image.provider === 'wan' ? '百炼万相生图' : 'Agnes 生图', ready: imageReady, detail: imageReady ? form.image.model : '配置不完整' },
+      { label: form.image.provider === 'wan' ? '百炼万相生图' : form.image.provider === 'minimax' ? 'MiniMax 生图' : 'Agnes 生图', ready: imageReady, detail: imageReady ? form.image.model : '配置不完整' },
       { label: '豆包 TTS', ready: form.tts.allow_silent_mode || doubaoReady, detail: form.tts.allow_silent_mode && !doubaoReady ? '未配置 · 无旁白模式下可跳过' : doubaoEnabled ? (doubaoReady ? '已启用' : '配置不完整') : '未启用' },
       { label: 'MiMo TTS', ready: form.tts.allow_silent_mode || mimoReady, detail: form.tts.allow_silent_mode && !mimoReady ? '未配置 · 无旁白模式下可跳过' : mimoEnabled ? (mimoReady ? '已启用' : '配置不完整') : '未启用' },
     ]
@@ -664,14 +664,14 @@ export function SettingsPage({ embedded = false, onClose }) {
             />
           </ConfigSection>
 
-          <ConfigSection id="settings-image" icon={Image} title="图片生成" badge="Image" description="支持百炼万相 2.7 与旧版 Agnes 生图，均保留图片版本和逐镜头重试。">
+          <ConfigSection id="settings-image" icon={Image} title="图片生成" badge="Image" description="支持 MiniMax Image-01（IP参考图）、百炼万相 2.7 与 Agnes 生图，均保留图片版本和逐镜头重试。">
             <Field label="图片 Provider" wide group>
               <Segmented value={form.image.provider} onChange={value => setForm(current => chooseImageProvider(current, value))}
-                options={[[ 'wan', '百炼万相' ], [ 'agnes', 'Agnes' ]]} />
+                options={[[ 'wan', '百炼万相' ], [ 'minimax', 'MiniMax' ], [ 'agnes', 'Agnes' ]]} />
             </Field>
             <Field label="当前模型" wide group>
               <span className="settings-fixed-summary">
-                {form.image.provider === 'wan' ? '万相 / ' : 'Agnes / '}
+                {form.image.provider === 'wan' ? '万相 / ' : form.image.provider === 'minimax' ? 'MiniMax / ' : 'Agnes / '}
                 <code>{form.image.model}</code>
               </span>
             </Field>
@@ -679,7 +679,7 @@ export function SettingsPage({ embedded = false, onClose }) {
               onChange={event => updateSection('image', 'api_key', event.target.value)} placeholder="本地密钥，不要提交 Git" /></Field>
             <Field label="图片尺寸"><select value={form.image.size}
               onChange={event => updateSection('image', 'size', event.target.value)}>
-              {(form.image.provider === 'wan' ? WAN_SIZES : IMAGE_SIZES).map(size =>
+              {(form.image.provider !== 'agnes' ? WAN_SIZES : IMAGE_SIZES).map(size =>
                 <option value={size} key={size}>{size === 'auto' ? '自动匹配分镜画幅' : size}</option>)}
             </select></Field>
             {form.image.provider === 'wan' ? <p className="settings-fixed-summary">
@@ -689,7 +689,9 @@ export function SettingsPage({ embedded = false, onClose }) {
             <AdvancedSettings
               title="高级配置"
               summary={`${form.image.api_url || '未设置 URL'} · ${form.image.model || '未设置模型'}`}
-              onRestore={() => setForm(current => current.image.provider === 'wan'
+              onRestore={() => setForm(current => current.image.provider === 'minimax'
+                ? chooseImageProvider(current, 'minimax')
+                : current.image.provider === 'wan'
                 ? { ...current, image: { ...current.image, ...WAN_IMAGE_PRESET } }
                 : restoreAgnesPreset(current))}
             >

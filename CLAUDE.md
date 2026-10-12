@@ -183,3 +183,10 @@ npm run dev
 - 在前端目录运行 `npx playwright test --config=playwright.site.config.js` 验证 390/768/1440 宽度、真实视频播放与文档，预览服务使用独立端口 2104。
 
 - Pages 发布使用 `.github/workflows/pages.yml`，只接收本仓库 `master` 的成功 push CI；发布前校验 8 项检查、最新 SHA 和构建产物身份，不执行 PR 产物中的代码。失败、PR、过期运行不能部署。配置与回退见 `docs/pages-release.md`。
+
+### 原生分镜与 MiniMax 生图
+
+- H3 的 review_first 新任务先由现有导演模型按完整文稿设计语义分镜，完整保留原文，逐镜时长 4–15 秒；`generation_options.target_duration_seconds` 可固定目标总时长。当前单次原生视频上限仍为 12 镜/180 秒；不得宣称已支持任意长视频。旧任务和旧 TTS 分段保持兼容。
+- MiniMax 图片配置使用 `image.provider=minimax`、官方 `/v1/image_generation`、`model=image-01`；逐镜传入导演图片描述和已有 IP 参考图，单次 `n=1`，关闭 prompt_optimizer，Base64 返回落本地。不记录 Key、参考图 DataURL 或完整请求。
+- 模型正文为空或输出截断必须报告失败，禁止用通用提示词伪造完成；导演方案保存到检查点，取消和重试保留已生成文本及图片。
+- IP 已有参考图时，导演必须同时获得外观和服装文字约束；字段不完整时阻止规划，不得凭角色名字或性格发明外观。参考图与文字必须一致。

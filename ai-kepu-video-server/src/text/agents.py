@@ -40,7 +40,7 @@ class ScriptRewriter:
             prompt += "\n\n" + narration_guidance(ip_profile)
         text = self.article_generator._call_api(
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=4096,
+            max_tokens=16384,
         )
         result = self._parse_json(text)
         script = (result.get("script") or "").strip()
@@ -160,7 +160,7 @@ Return only the English visual prompt."""
 
         result = self.article_generator._call_api(
             messages=[{"role": "user", "content": user_prompt}],
-            max_tokens=320,
+            max_tokens=4096,
         )
         prompt = self._clean_prompt(result)
         logger.info("当前分镜画面提示词规划完成")
@@ -176,5 +176,5 @@ Return only the English visual prompt."""
         if len(words) > 85:
             prompt = " ".join(words[:85])
         if not prompt:
-            prompt = "cinematic educational scene, clear subject, natural lighting, detailed composition"
+            raise ValueError("图片提示词模型返回空内容，需重新生成")
         return prompt
