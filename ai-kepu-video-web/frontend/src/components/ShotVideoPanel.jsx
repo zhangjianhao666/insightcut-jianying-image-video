@@ -14,7 +14,7 @@ export function ShotVideoPanel({ taskId, segment, onReady }) {
   useEffect(() => {
     setPrompt(segment?.motion_prompt
       || (segment?.image_prompt
-        ? '承接上一镜头尾帧：同一人物外观、服装、场景与光线保持一致；主体先有轻微自然动作，环境有细微动态，[Push in] 镜头平稳缓慢推进；结尾画面停在主体清晰的位置，便于下一镜头衔接。不出现文字、字幕或口型说话。'
+        ? '正常切镜：保持本镜头首帧、角色外貌和画风，不要求复制上一镜头的尾帧；主体有自然动作，[Push in] 平稳运镜；结束在清晰的姿态。不要文字、字幕或假设稳定台词音色。'
         : ''))
     notifiedReady.current = false
     setState({ status: 'not_generated' })
@@ -68,8 +68,12 @@ export function ShotVideoPanel({ taskId, segment, onReady }) {
   }
   return <section className="workspace-inspector-section" aria-label="AI 动态镜头">
     <div className="workspace-setting-heading"><strong>AI 动态镜头</strong><span>按镜头付费，未生成时保持原有图片动效</span></div>
+    {segment.scene_id ? <p>场景：{segment.scene_id} · 本镜头尾部衔接：
+      {({ cut: '正常切镜', match_cut: '匹配剪辑', continue: '连续动作' })[segment.transition_to_next] || '正常切镜'}
+      {segment.camera ? ` · ${segment.camera}` : ''}
+    </p> : null}
     <label className="workspace-inspector-field"><span>镜头动作提示词</span>
-      <textarea value={prompt} maxLength={1800} onChange={e => setPrompt(e.target.value)} placeholder="写清四段：承接上一镜头尾帧（人物/服装/场景/光线一致）；主体动作顺序与环境音效；用 [Push in]、[Pan left] 等运镜命令；结尾画面留给下一镜头的接续点。不要写字幕或台词。" />
+      <textarea value={prompt} maxLength={1800} onChange={e => setPrompt(e.target.value)} placeholder="写清本镜头首帧、主体动作、运镜和收尾。普通切镜不需要强行承接上一镜头尾帧；如果同场景动作继续，请明确人物站位和动作方向。" />
     </label>
     <p>状态：{({
       not_generated: '尚未生成', running: '生成中', interrupted: '任务中断，可恢复查询',
@@ -82,6 +86,6 @@ export function ShotVideoPanel({ taskId, segment, onReady }) {
     <button type="button" className="button button-secondary" disabled={busy || state.status === 'running' || !segment.image_url || !prompt.trim()} onClick={generate}>
       {busy ? '正在提交...' : running ? '恢复/重新查询任务' : state.status === 'completed' ? '重新生成动态视频' : `生成 ${clipSeconds} 秒动态视频`}
     </button>
-    <small>生成完成后，下一次完整预览与 MP4 导出会自动选用该动态视频；带原生音效的模型（MiniMax-H3）会保留环境音，生成失败不影响原图片。</small>
+    <small>提交时会附加导演规划中的人物/场景/起止状态约束；连续动作仅在同场景才允许。MiniMax-H3 的原生环境声可在全片合成阶段选择保留或静音，不能保证人物音色一致。</small>
   </section>
 }
