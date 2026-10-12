@@ -21,6 +21,9 @@ export function VideoFirstPanel({ taskId, segments = [], ratio = '16:9', product
   const [error, setError] = useState('')
   const [review, setReview] = useState(null)
   const [audioMode, setAudioMode] = useState(null)
+  const [h3Reference, setH3Reference] = useState(null)
+  const [referenceBusy, setReferenceBusy] = useState(false)
+  const [referenceError, setReferenceError] = useState('')
   const count = segments.length
   // Clip lengths come from the configured provider; MiniMax rejects 5s at 1080P.
   const durationOptions = Array.isArray(job.duration_options) && job.duration_options.length
@@ -38,7 +41,11 @@ export function VideoFirstPanel({ taskId, segments = [], ratio = '16:9', product
   const activeFlow = ['queued', 'generating_assets', 'render_queued', 'rendering', 'cancelling']
     .includes(production?.state)
 
-  useEffect(() => { setAudioMode(null) }, [taskId])
+  useEffect(() => {
+    setAudioMode(null)
+    setH3Reference(null)
+    setReferenceError('')
+  }, [taskId])
 
   useEffect(() => {
     if (!taskId) return undefined
@@ -69,17 +76,68 @@ export function VideoFirstPanel({ taskId, segments = [], ratio = '16:9', product
         if (live) setReview(null)
       }
     }
+    const refreshReferences = async () => {
+      try {
+        const data = await request({
+          url: `${ROOT}/tasks/${encodeURIComponent(taskId)}/h3-references`,
+          method: 'get', suppressToast: true,
+        })
+        if (live) setH3Reference(data)
+      } catch {
+        if (live) setReferenceError('参考素材设置暂时无法加载')
+      }
+    }
     void refresh()
     void refreshContinuity()
+    void refreshReferences()
     const interval = window.setInterval(refresh, 4000)
     const reviewInterval = window.setInterval(refreshContinuity, 12000)
-    return () => { live = false; window.clearInterval(interval); window.clearInterval(reviewInterval) }
+    const referenceInterval = window.setInterval(refreshReferences, 12000)
+    return () => {
+      live = false
+      window.clearInterval(interval)
+      window.clearInterval(reviewInterval)
+      window.clearInterval(referenceInterval)
+    }
   }, [taskId])
+
+  const referenceBase = `${ROOT}/tasks/${encodeURIComponent(taskId)}/h3-references`
+  const referencesLocked = busy || referenceBusy || ['generating', 'rendering'].includes(job.status) || activeFlow
+  const updateH3 = async (verb, suffix = '', payload = null) => {
+    if (referencesLocked) return
+    setReferenceBusy(true)
+    setReferenceError('')
+    try {
+      const response = await request({
+        url: referenceBase + suffix, method: verb, data: payload,
+      })
+      setH3Reference(response)
+      // Re-evaluate whether previously generated shots are still valid.
+      const status = await request({
+        url: `${ROOT}/tasks/${encodeURIComponent(taskId)}/video-first`,
+        method: 'get', suppressToast: true,
+      })
+      setJob(status)
+    } catch (e) {
+      setReferenceError(e?.response?.data?.detail || '参考素材保存失败，请检查格式和文件大小')
+    } finally {
+      setReferenceBusy(false)
+    }
+  }
+  const uploadH3 = async (suffix, file) => {
+    if (!file) return
+    const data = new FormData()
+    data.append('file', file)
+    await updateH3('post', suffix, data)
+  }
 
   const generate = async () => {
     const missing = Math.max(0, count - (job.completed || 0))
     const estimate = missing * activeSeconds
-    const notice = `准备生成动态视频：${count} 个镜头，每段 ${activeSeconds} 秒。\n\n最多可能新调用 ${missing} 次图生视频，计费总秒数上限约 ${estimate} 秒（如有有效片段则复用，最终以服务商计费为准）。\n\n每段都会生成真正的 MP4；任何一段失败都不会用图片代替。音频策略：${activeAudioMode === 'mute' ? '移除模型原生音轨，后期统一配音' : '保留模型原生音效（不能保证跨镜头同一人声）'}。\n\n${retryPaid ? '你已勾选「允许重新提交失败任务」：可能产生额外费用。\n\n' : ''}确认开始？`
+    const referenceNotice = h3Reference?.mode === 'reference'
+      ? '海螺 H3 多模态参考模式：分镜图片只是构图参考，不保证视频首帧一致。'
+      : '普通首帧图生视频模式：严格以当前分镜首帧为输入。'
+    const notice = `${referenceNotice}\n\n准备生成动态视频：${count} 个镜头，每段 ${activeSeconds} 秒。\n\n最多可能新调用 ${missing} 次图生视频，计费总秒数上限约 ${estimate} 秒（如有有效片段则复用，最终以服务商计费为准）。\n\n每段都会生成真正的 MP4；任何一段失败都不会用图片代替。音频策略：${activeAudioMode === 'mute' ? '移除模型原生音轨，后期统一配音' : '保留模型原生音效（不能保证跨镜头同一人声）'}。\n\n${retryPaid ? '你已勾选「允许重新提交失败任务」：可能产生额外费用。\n\n' : ''}确认开始？`
     if (!window.confirm(notice)) return
     setBusy(true)
     setError('')
@@ -163,6 +221,51 @@ export function VideoFirstPanel({ taskId, segments = [], ratio = '16:9', product
       <a href={url} download="video_first.mp4">下载真正的动态视频 MP4</a>
     </div> : null}
     {error || job.error ? <p role="alert">{error || job.error}</p> : null}
+    {h3Reference?.supports_reference || h3Reference?.mode === 'reference' ? (
+      <details className="video-first-continuity" aria-label="海螺 H3 参考生成">
+        <summary>H3 跨镜头参考 · {h3Reference?.mode === 'reference' ? '已启用' : '未启用'}</summary>
+        <p>选「首帧模式」保证采用分镜首帧；选「参考模式」提高相同角色、场景与声音的一致性，
+          但 API 不允许两种模式同时使用。参考模式不保证视频从首帧图片原样开始。</p>
+        <label>生成方式 <select value={h3Reference.mode} disabled={referencesLocked || !h3Reference.supports_reference}
+          onChange={event => { void updateH3('put', '', { mode: event.target.value }) }}>
+          <option value="first_frame">首帧图生视频（原有模式）</option>
+          <option value="reference">H3 多模态参考（角色/场景/声音）</option>
+        </select></label>
+        <p>角色图：{h3Reference.ip_ready
+          ? `自动使用已绑定 IP「${h3Reference.ip_name}」的参考图`
+          : '未绑定 IP 参考图，仍可使用分镜图片和场景图'}</p>
+        <div className="h3-reference-grid">
+          {h3Reference.scenes?.map(scene => <div key={scene.scene_id} className="h3-reference-item">
+            <strong>场景 {scene.scene_id}</strong>
+            <span>{scene.image_ready ? '已保存共享场景参考图' : '尚无共享场景参考图'}</span>
+            <input aria-label={`上传场景 ${scene.scene_id} 参考图`} type="file"
+              accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp"
+              disabled={referencesLocked}
+              onChange={event => {
+                void uploadH3(`/scenes/${encodeURIComponent(scene.scene_id)}`, event.target.files?.[0])
+                event.target.value = ''
+              }}/>
+            {scene.image_ready ? <button type="button" disabled={referencesLocked}
+              onClick={() => { void updateH3('delete', `/scenes/${encodeURIComponent(scene.scene_id)}`) }}>移除图片</button> : null}
+          </div>)}
+        </div>
+        <div className="h3-reference-item">
+          <strong>固定声音参考（可选）</strong>
+          <span>{h3Reference.voice_ready ? '已上传 2～15 秒声音样本' : '未上传声音参考；模型可自由生成原生声音'}</span>
+          <input aria-label="上传固定声音参考 WAV" type="file" accept=".wav,audio/wav"
+            disabled={referencesLocked}
+            onChange={event => {
+              void uploadH3('/voice', event.target.files?.[0])
+              event.target.value = ''
+            }}/>
+          {h3Reference.voice_ready ? <button type="button" disabled={referencesLocked}
+            onClick={() => { void updateH3('delete', '/voice') }}>移除声音样本</button> : null}
+          <small>仅支持单/双声道 PCM WAV，2～15 秒，8 MB 以内。引用音色不能保证逐字准确或口型同步。</small>
+        </div>
+        {referenceError ? <p role="alert">{referenceError}</p> : null}
+        <small>{h3Reference.note}</small>
+      </details>
+    ) : null}
     {review ? <details className="video-first-continuity">
       <summary>一致性导演 · {review.shots?.length || 0} 个镜头 · {review.warnings?.length || 0} 项待复核</summary>
       <p>IP：{review.ip?.name || '未绑定'}{review.ip?.version ? ` · v${review.ip.version}` : ''}。
@@ -196,12 +299,13 @@ export function VideoFirstPanel({ taskId, segments = [], ratio = '16:9', product
       </label> : null}
       <button type="button" className="button button-primary"
         onClick={generate}
-        disabled={!available || busy || running || activeFlow}>
+        disabled={!available || busy || running || activeFlow || referenceBusy || (h3Reference?.mode === 'reference' && !h3Reference?.supports_reference)}>
         {busy ? '正在提交…' : job.status === 'completed' ? '重新检查并生成动态成片' : '生成全片 AI 动态视频'}
       </button>
       {running && !activeFlow ? <button type="button" className="button button-secondary" disabled={busy}
         onClick={cancelFutureCalls}>停止后续付费镜头</button> : null}
     </div>
+    {referenceError && !h3Reference ? <small className="video-first-help" role="alert">{referenceError}</small> : null}
     {!available ? <small className="video-first-help">
       {!count ? '请先完成 AI 分镜。' : count > 12
         ? '第一版最多 12 个分镜；请缩短脚本或调整分镜。'
