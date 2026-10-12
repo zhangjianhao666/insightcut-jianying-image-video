@@ -130,8 +130,8 @@ class DummyPlanner:
                 "negative_rules": "No overlay typography",
             },
             "shots": [
-                {"index": 0, "image_prompt": "Same blue-coated panda on village bridge at sunrise, wide angle cinematic lighting", "motion_prompt": "镜头缓慢推进", "shot_type": "scene"},
-                {"index": 1, "image_prompt": "Same blue-coated panda crossing the same bridge, close shot warm cinematic light", "motion_prompt": "平稳跟拍，衣服不变", "shot_type": "portrait"},
+                {"index": 0, "image_prompt": "Same blue-coated panda on village bridge at sunrise, wide angle cinematic lighting", "motion_prompt": "熊猫站在村庄木桥上，保持蓝色外套、圆形眼睛和暖色三维动画画风，晨光从右侧照亮桥面；熊猫先低头看看手中的硬币，再缓缓抬头朝桥尾望去，右手轻轻握紧硬币，身体随呼吸自然起伏，衣角被微风吹动；[Push in] 镜头缓慢推进，沿原来的机位靠近主体，村庄背景逐渐柔化，晨光方向保持一致；结尾熊猫面向桥前方，右手停在胸前，服装与站位保持稳定，留下清晰的下一步行走姿态。", "camera": "wide shot", "start_state": "熊猫站在桥上", "end_state": "熊猫面向桥尾", "shot_type": "scene"},
+                {"index": 1, "image_prompt": "Same blue-coated panda crossing the same bridge, close shot warm cinematic light", "motion_prompt": "熊猫从同一座村庄木桥的中央出发，蓝色外套、黑白毛色和晨光环境保持一致，右手握住硬币；熊猫先迈出左脚，再以轻快但自然的速度向桥尾走去，手臂轻轻摆动，硬币始终握在右手，外套衣摆随步伐晃动，动作不突然跳跃；[Tracking shot] 平稳跟拍，衣服不变，镜头从熊猫侧面缓慢移动，背景桥栏顺着行走方向掠过；结尾熊猫来到桥尾停下，右手举起硬币，目光转向村庄入口，画面稳定地保留角色姿态与下一镜头的接续方向。", "camera": "close side shot", "start_state": "熊猫从桥中央出发", "end_state": "熊猫在桥尾停下", "shot_type": "portrait"},
             ],
         })
 
@@ -147,7 +147,7 @@ def test_global_director_plans_once_and_persists_motion(monkeypatch, tmp_path):
     second = plan_storyboard("test-project", planner, **args)
     assert planner.calls == 1
     assert first["fingerprint"] == second["fingerprint"]
-    assert lookup_shot("test-project", 1, "乙")["motion_prompt"] == "平稳跟拍，衣服不变"
+    assert "平稳跟拍，衣服不变" in lookup_shot("test-project", 1, "乙")["motion_prompt"]
     assert lookup_shot("test-project", 1, "变更后的旁白") == {}
 
 

@@ -29,6 +29,17 @@ class FakeSession:
         return FakeResponse({"output": {"task_status": "SUCCEEDED", "video_url": "https://video.oss-cn-beijing.aliyuncs.com/clip.mp4"}})
 
 
+@pytest.fixture(autouse=True)
+def isolated_video_runtime(monkeypatch):
+    from src.api.task_runtime import TaskRuntimeRegistry
+    from src.media import shot_video_jobs
+    runtime = TaskRuntimeRegistry()
+    monkeypatch.setattr(shot_video_jobs, "task_runtime", runtime)
+    yield runtime
+    runtime.close()
+    assert runtime.wait_idle(5)
+
+
 def test_wan_payload_disables_model_audio(tmp_path):
     image = tmp_path / "first.png"
     image.write_bytes(b"test-image")

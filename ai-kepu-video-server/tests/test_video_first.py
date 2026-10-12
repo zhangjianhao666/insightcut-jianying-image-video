@@ -14,6 +14,10 @@ from src.media import shot_video_jobs, video_first
 @pytest.fixture
 def project(monkeypatch, tmp_path):
     monkeypatch.setattr(Config, "BASE_DIR", tmp_path)
+    from src.api import task_runtime as runtime_module
+    runtime = runtime_module.TaskRuntimeRegistry()
+    monkeypatch.setattr(runtime_module, "task_runtime", runtime)
+    monkeypatch.setattr(shot_video_jobs, "task_runtime", runtime)
     # These tests mock the legacy Wan clip lengths; never inherit whatever
     # video provider the developer happens to have configured locally.
     monkeypatch.setattr(shot_video_jobs, "video_provider", lambda: "wan")
@@ -31,7 +35,9 @@ def project(monkeypatch, tmp_path):
             "image_status": "completed",
             "image_path": str(image),
         })
-    return tmp_path, inputs
+    yield tmp_path, inputs
+    runtime.close()
+    assert runtime.wait_idle(5)
 
 
 def test_requires_explicit_paid_approval(project):

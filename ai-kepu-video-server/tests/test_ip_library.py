@@ -104,7 +104,7 @@ def test_model_storyboard_ip_wins_over_new_episode_style(local_ip_env):
         def _call_api(self, **kwargs):
             return json.dumps({
                 "visual_bible": {"character_lock": "Wrong completely different character"},
-                "shots": [{"index": 0, "image_prompt": "A character tells a dramatic story in a village at sunrise", "motion_prompt": "推进", "shot_type": "scene"}],
+                "shots": [{"index": 0, "image_prompt": "A character tells a dramatic story in a village at sunrise", "motion_prompt": "小熊猫站在图书馆的木桌旁，保持圆眼睛、亮蓝色马甲和柔和三维动画画风，桌上书本与窗边晨光保持一致；小熊猫先将右手放在书页上，再缓缓抬头看向镜头，左手轻轻指向插画，身体自然转向观众，动作按顺序展开，马甲和面部外形不发生变化；[Push in] 镜头从中景平稳推进到角色半身构图，保持原来的轴线与柔和光线，背景书架逐渐虚化但物品位置不改变；收尾小熊猫右手停在书页上，左手自然放下，目光平静地面向观众，留下稳定姿态与温暖的场景氛围。", "camera": "medium shot", "start_state": "小熊猫站在桌旁", "end_state": "小熊猫面向观众", "shot_type": "scene"}],
             })
     plan = plan_storyboard(
         "series-episode", Planner(), script="示例",
