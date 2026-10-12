@@ -43,8 +43,11 @@ def _config_path(task_id):
 
 
 def _read(task_id):
+    # Validate the task ID outside the exception handler: H3ReferenceError
+    # extends ValueError and must never be disguised as "no settings".
+    path = _config_path(task_id)
     try:
-        item = json.loads(_config_path(task_id).read_text("utf-8"))
+        item = json.loads(path.read_text("utf-8"))
         return item if isinstance(item, dict) else {}
     except (OSError, ValueError):
         return {}
