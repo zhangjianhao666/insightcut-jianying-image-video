@@ -12,16 +12,17 @@ import uuid
 from pathlib import Path
 
 from src.config import Config
+from src.text.continuity import normalize_boundaries, normalize_shot, audit_plan
 
 log = logging.getLogger(__name__)
-_PLAN_VERSION = 2
+_PLAN_VERSION = 3
 # Shared fallback so a shot without a planned motion script still tells the
 # image-to-video model to continue the previous frame instead of starting over.
 DEFAULT_MOTION_PROMPT = (
-    "承接上一镜头尾帧：同一人物外观、服装、场景、道具与光线色调保持一致；"
+    "正常切镜：这是独立构图，沿用已经确认的角色外观、服装和画风；"
     "主体先有轻微自然动作（呼吸、转头、抬手），环境有细微动态（光影变化、"
     "背景物体自然运动），[Push in] 镜头平稳缓慢推进，不改变角色外貌与画面布局，"
-    "不出现文字、字幕或口型说话；结尾画面停在主体清晰、构图稳定的位置，"
+    "不出现文字、字幕或口型说话；结尾画面保持清晰稳定，"
     "便于下一镜头无缝衔接。"
 )
 
@@ -106,8 +107,9 @@ def _normalize_plan(raw, count):
             "image_prompt": image_prompt,
             "motion_prompt": motion_prompt or DEFAULT_MOTION_PROMPT,
             "shot_type": str(shot.get("shot_type") or "scene")[:50],
+            **normalize_shot(shot, index),
         }
-    return {"visual_bible": clean_bible, "shots": shots}
+    return {"visual_bible": clean_bible, "shots": normalize_boundaries(shots)}
 
 
 def load_plan(task_id):
@@ -173,46 +175,44 @@ def plan_storyboard(task_id, generator, *, script, segments, summary, style, rat
         + [(len(segments)-3+i, text[:120]) for i, text in enumerate(segments[-3:])]
     )
     instructions = (
-        "你是长视频分镜导演与美术指导。你要把整集规划成一条首尾相接的连续镜头序列："
-        "上一镜头的结束画面就是下一镜头的开始画面，相邻镜头必须能从提示词层面无缝衔接，"
-        "不要把每句旁白逐字画出来。"
-        "主角、服饰、道具、环境、光线与色调在镜头间保持一致，只允许景别、机位和主体动作推进；"
-        "画面构图要有远景中景特写的变化。"
-        "旁白中的数据、数字或术语优先用物体和情景隐喻表现，不要在生成图片上写数字和字幕。"
-        "返回一个 JSON 对象，必须包含 visual_bible 字段："
-        "character_lock（固定人物外观或无人物说明）、environment_lock、art_direction、camera_language、negative_rules。"
-        "另外返回 shots 数组，每项包含 index（0开始）、shot_type（scene/portrait/diagram/transition）、"
-        "image_prompt（英文、明确主体场景构图光线和动作的 35-80 词画面提示词）、"
-        "motion_prompt（中文 150-400 字，给图生视频模型使用的连续镜头脚本）。"
-        "motion_prompt 必须写全四段并用分号分隔："
-        "① 承接：本镜头开场如何延续上一镜头的尾帧——同一人物外观与服装、同一场景道具、同一光线色调；"
-        "第一个镜头则描述起始画面；"
-        "② 动作：主体按先后顺序做什么、速度与幅度，可写环境音效与氛围（雨声、脚步声、风声、背景音乐情绪），"
-        "但禁止写台词、口型说话或任何屏幕文字；"
-        "③ 运镜：在句中用官方英文方括号指令描述机位运动，可选 "
-        "[Truck left] [Truck right] [Pan left] [Pan right] [Push in] [Pull out] "
-        "[Pedestal up] [Pedestal down] [Tilt up] [Tilt down] [Zoom in] [Zoom out] "
-        "[Tracking shot] [Static shot]；"
-        "④ 收尾：镜头结束时画面停在哪里、留给下一镜头什么接续点。"
-        "各镜头服从 visual_bible，不允许漂移。只输出 JSON。"
+        "你是专业动画导演和剪辑师。把一集故事规划为可独立生成、后期能剪辑的多个短镜头。"
+        "不要假定每个镜头的尾帧必须等于下一镜头的首帧：正常切镜可以从全景切特写、反打镜头或跨场景；"
+        "只有标记为 continue 的同场景连续动作才要求动作方向、姿态和站位接续。"
+        "match_cut 则只匹配视觉元素或动作方向，不要求两帧像素相同。"
+        "全片固定角色长相、服装、色彩体系和摄影风格；场景变化必须是剧情需要，不要无故改变道具和角色。"
+        "返回纯 JSON 对象：visual_bible(character_lock, environment_lock, art_direction,"
+        " camera_language, negative_rules) 和 shots 列表。"
+        "shots 每项必须包含：index(0开始)、scene_id(同一实际场景用同一编号，如 scene_01)、"
+        "character_ids(角色ID数组)、location_id(固定场景/房间标识)、"
+        "camera(景别/机位/轴线)、start_state(该镜头开场角色位置/手部/视线/道具状态)、"
+        "end_state(镜头结束状态)、transition_to_next(cut/match_cut/continue 之一)、"
+        "shot_type(scene/portrait/diagram/transition)、"
+        "image_prompt(英文35-80词：主体/景别/机位/光线/角色标识)、"
+        "motion_prompt(中文150-400字：主角动作与运镜、光影和环境，不含口播台词)。"
+        "motion_prompt 分四段用分号隔开：① 开场状态与视觉约束；② 动作顺序与速度；"
+        "③ [Push in]、[Pan left]、[Tracking shot] 或 [Static shot] 等运镜；"
+        "④ 本镜头收尾姿态。不要无条件写承接上一镜头尾帧。"
+        "有台词时描述表演与视线即可，不要求生成模型发出固定人声或字幕；"
+        "真正的讲述音色交给独立音轨统一控制。"
+        "最后一镜头 transition_to_next 必须是 cut。严格只输出 JSON。"
     )
     if not compact:
         instructions += "当前镜头太多，本次只创建全片 visual_bible；shots 返回空数组。"
     ip_prompt = ""
     if ip_profile:
         ip_prompt = (
-            "\\n固定系列 IP（优先级高于单集发挥，不允许改变角色外观）："
+            "\n固定系列 IP（优先级高于单集发挥，不允许改变角色外观）："
             + json.dumps({
                 key: ip_profile.get(key) for key in (
                     "name", "persona", "voice_style", "catchphrase", "canon", "visual_identity", "outfit",
                     "world", "art_style", "camera_style", "negative_rules"
                 )
             }, ensure_ascii=False)[:2000]
-            + "\\n请让这一 IP 作为本集的稳定讲述者或画面主角。"
+            + "\n请让这一 IP 作为本集的稳定讲述者或画面主角。"
         )
     payload = (
-        f"{instructions}\\n画风：{style[:250]}\\n画幅：{ratio}\\n全文总结：{summary[:650]}"
-        f"\\n分镜编号与对应旁白：{json.dumps(excerpt, ensure_ascii=False)}"
+        f"{instructions}\n画风：{style[:250]}\n画幅：{ratio}\n全文总结：{summary[:650]}"
+        f"\n分镜编号与对应旁白：{json.dumps(excerpt, ensure_ascii=False)}"
         + ip_prompt
     )
     try:
@@ -238,5 +238,6 @@ def plan_storyboard(task_id, generator, *, script, segments, summary, style, rat
         "segments": list(segments), "visual_bible": parsed["visual_bible"],
         "shots": parsed["shots"],
     }
+    record["continuity_warnings"] = audit_plan(record)
     _write(task_id, record)
     return record
