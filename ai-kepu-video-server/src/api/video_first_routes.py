@@ -22,6 +22,8 @@ class StartVideoFirst(BaseModel):
     duration: int | None = Field(default=None)
     force_new_failed: bool = Field(default=False)
     audio_mode: Optional[Literal["native", "mute"]] = None
+    subtitles: bool | None = None
+    max_duration: float | None = Field(default=None, gt=0, le=3600)
 
 
 def _project(task_id):
@@ -43,6 +45,11 @@ def _view(task_id, task, segments, request):
     value["video_provider"] = shot_video_jobs.video_provider()
     value["duration_options"] = list(shot_video_jobs.duration_options())
     value["default_duration"] = shot_video_jobs.default_duration()
+    if value.get("status") == "not_started":
+        from src.media.minimax_i2v import is_h3_model
+        value["subtitles"] = (shot_video_jobs.video_provider() == "minimax"
+                              and is_h3_model(shot_video_jobs._video_config().get("model")))
+        value["max_duration"] = len(segments)*value["default_duration"] if value["subtitles"] else None
     return value
 
 
@@ -85,6 +92,26 @@ async def start_video_first(task_id: str, data: StartVideoFirst, request: Reques
             confirmed=True,
             force_new_failed=data.force_new_failed,
             audio_mode=data.audio_mode,
+            subtitles=data.subtitles,
+            max_duration=data.max_duration,
+        )
+    except video_first.VideoFirstError as error:
+        raise HTTPException(409, str(error)) from None
+    return _view(task_id, task, segments, request)
+
+
+class LocalDelivery(BaseModel):
+    subtitles: bool = True
+    max_duration: float | None = Field(default=None, gt=0, le=3600)
+
+
+@router.post("/tasks/{task_id}/video-first/delivery", status_code=202)
+async def retry_local_delivery(task_id: str, data: LocalDelivery, request: Request):
+    task, segments = await asyncio.to_thread(_project, task_id)
+    try:
+        await asyncio.to_thread(
+            video_first.retry_delivery, task_id, segments, ratio=task.get("ratio") or "16:9",
+            subtitles=data.subtitles, max_duration=data.max_duration,
         )
     except video_first.VideoFirstError as error:
         raise HTTPException(409, str(error)) from None

@@ -6,15 +6,21 @@ const ROOT = '/ai/native/video/kepu'
 const STATES = {
   not_started: '尚未生成 AI 动态成片',
   generating: '正在逐镜头生成真正的 AI 动态视频',
-  rendering: '所有动态镜头已完成，正在拼接 MP4',
+  transcribing: '正在识别原生对白与校验时间轴',
+  subtitling: '正在生成同步中文字幕',
+  rendering: '正在渲染与校验交付 MP4',
+  verifying: '正在验收动态视频',
+  delivery_blocked: '交付阻塞，已有动态镜头保留',
   completed: '动态成片已完成',
   interrupted: '任务中断，可恢复已保存的镜头任务',
   failed: '部分镜头生成失败，已有素材仍然保留',
   stale: '分镜或首帧改变，当前成片已经过期',
 }
 
-export function VideoFirstPanel({ taskId, segments = [], ratio = '16:9', production }) {
+export function VideoFirstPanel({ taskId, segments = [], ratio = '16:9', production, onStatusChange }) {
   const [job, setJob] = useState({ status: 'not_started', total: 0, completed: 0 })
+  const [subtitles, setSubtitles] = useState(null)
+  const [maxDuration, setMaxDuration] = useState(null)
   const [seconds, setSeconds] = useState(null)
   const [retryPaid, setRetryPaid] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -24,6 +30,12 @@ export function VideoFirstPanel({ taskId, segments = [], ratio = '16:9', product
   const [h3Reference, setH3Reference] = useState(null)
   const [referenceBusy, setReferenceBusy] = useState(false)
   const [referenceError, setReferenceError] = useState('')
+  const activeAudioMode = audioMode || job.preferred_audio_mode || job.audio_mode || 'native'
+  const isMute = activeAudioMode === 'mute'
+  const activeSubtitles = !isMute && (subtitles ?? job.subtitles ?? true)
+  const activeMaxDuration = maxDuration ?? (job.max_duration == null ? '' : String(job.max_duration))
+  const validMaxDuration = isMute || activeMaxDuration === '' || (Number.isFinite(Number(activeMaxDuration)) && Number(activeMaxDuration) > 0)
+  const deliveryOptions = { subtitles: activeSubtitles, max_duration: isMute || activeMaxDuration === '' ? null : Number(activeMaxDuration) }
   const count = segments.length
   // Clip lengths come from the configured provider; MiniMax rejects 5s at 1080P.
   const durationOptions = Array.isArray(job.duration_options) && job.duration_options.length
@@ -32,7 +44,6 @@ export function VideoFirstPanel({ taskId, segments = [], ratio = '16:9', product
   const activeSeconds = durationOptions.includes(seconds)
     ? seconds
     : (job.default_duration ?? durationOptions[0])
-  const activeAudioMode = audioMode || job.preferred_audio_mode || job.audio_mode || 'native'
   const readyImages = useMemo(
     () => segments.filter(s => s.image_status === 'completed' && s.image_url).length,
     [segments],
@@ -43,6 +54,8 @@ export function VideoFirstPanel({ taskId, segments = [], ratio = '16:9', product
 
   useEffect(() => {
     setAudioMode(null)
+    setSubtitles(null)
+    setMaxDuration(null)
     setH3Reference(null)
     setReferenceError('')
   }, [taskId])
@@ -101,8 +114,10 @@ export function VideoFirstPanel({ taskId, segments = [], ratio = '16:9', product
     }
   }, [taskId])
 
+  useEffect(() => { onStatusChange?.(job) }, [job, onStatusChange])
+
   const referenceBase = `${ROOT}/tasks/${encodeURIComponent(taskId)}/h3-references`
-  const referencesLocked = busy || referenceBusy || ['generating', 'rendering'].includes(job.status) || activeFlow
+  const referencesLocked = busy || referenceBusy || ['generating', 'transcribing', 'subtitling', 'rendering', 'verifying'].includes(job.status) || activeFlow
   const updateH3 = async (verb, suffix = '', payload = null) => {
     if (referencesLocked) return
     setReferenceBusy(true)
@@ -147,6 +162,7 @@ export function VideoFirstPanel({ taskId, segments = [], ratio = '16:9', product
         url: `${ROOT}/tasks/${encodeURIComponent(taskId)}/video-first`,
         method: 'post',
         data: {
+          ...deliveryOptions,
           confirm_paid_generation: true,
           duration: activeSeconds,
           force_new_failed: retryPaid,
@@ -160,6 +176,31 @@ export function VideoFirstPanel({ taskId, segments = [], ratio = '16:9', product
     } finally {
       setBusy(false)
     }
+  }
+  const replanDirector = async () => {
+    if (busy || running || activeFlow || review?.status === 'planning') return
+    setBusy(true)
+    setError('')
+    try {
+      await request({ url: `${ROOT}/tasks/${encodeURIComponent(taskId)}/director/replan`, method: 'post', timeout: 30000 })
+      setReview(current => ({ ...current, status: 'planning', error: null, can_replan: false }))
+    } catch (e) {
+      setError(e?.response?.data?.detail || '镜头重新规划无法启动，已有素材仍然保留')
+    } finally { setBusy(false) }
+  }
+  const retryDelivery = async () => {
+    if (!validMaxDuration) return
+    setBusy(true)
+    setError('')
+    try {
+      const response = await request({
+        url: `${ROOT}/tasks/${encodeURIComponent(taskId)}/video-first/delivery`,
+        method: 'post', data: { ...deliveryOptions, max_duration: isMute ? null : deliveryOptions.max_duration ?? count * activeSeconds }, timeout: 30000,
+      })
+      setJob(response)
+    } catch (e) {
+      setError(e?.response?.data?.detail || '本地交付处理无法启动；已有视频仍然保留')
+    } finally { setBusy(false) }
   }
   const updateAudioMode = async nextMode => {
     const previous = activeAudioMode
@@ -192,7 +233,7 @@ export function VideoFirstPanel({ taskId, segments = [], ratio = '16:9', product
       setBusy(false)
     }
   }
-  const running = ['generating', 'rendering'].includes(job.status)
+  const running = ['generating', 'transcribing', 'subtitling', 'rendering', 'verifying'].includes(job.status)
   const url = job.video_url ? normalizeMediaUrl(job.video_url) : ''
   return <section className="video-first-panel" aria-label="真实 AI 视频生产">
     <header>
@@ -208,7 +249,7 @@ export function VideoFirstPanel({ taskId, segments = [], ratio = '16:9', product
       <span>首帧图片：{readyImages}/{count || 0}</span>
       <span>动态镜头：{job.completed || 0}/{job.total || count || 0}</span>
       <span>画幅：{ratio}</span>
-      <span>音轨：{job.audio_mode === 'mute' ? '模型原生音轨已移除' : job.has_audio ? '模型原生音效（未锁定人声）' : '无原生音频'}</span>
+      <span>音轨：{job.audio_mode === 'mute' ? '模型原生音轨已移除' : job.has_audio ? (job.native_dialogue ? (h3Reference?.mode === 'reference' && h3Reference?.voice_ready ? '原生对白 · 已引用固定声音样本' : '原生对白') : '模型原生音效') : '无原生音频'}</span>
     </div>
     {running ? <progress value={job.completed || 0} max={Math.max(job.total || count, 1)} aria-label="AI 动态镜头进度" /> : null}
     {job.shots?.length ? <div className="video-first-shot-status">
@@ -221,7 +262,9 @@ export function VideoFirstPanel({ taskId, segments = [], ratio = '16:9', product
       <video src={url} controls playsInline preload="metadata" aria-label="AI 动态镜头拼接成片" />
       <a href={url} download="video_first.mp4">下载真正的动态视频 MP4</a>
     </div> : null}
-    {error || job.error ? <p role="alert">{error || job.error}</p> : null}
+    {job.delivery_stage ? <p>交付阶段：{STATES[job.delivery_stage] || job.delivery_stage}</p> : null}
+    {job.delivery_duration != null ? <p>交付时长：{Number(job.delivery_duration).toFixed(2)} 秒{job.max_duration ? ` / 上限 ${job.max_duration} 秒` : ''}</p> : null}
+    {error || job.delivery_error || job.error ? <p role="alert">{error || job.delivery_error || job.error}</p> : null}
     {h3Reference?.supports_reference || h3Reference?.mode === 'reference' ? (
       <details className="video-first-continuity" aria-label="海螺 H3 参考生成">
         <summary>H3 跨镜头参考 · {h3Reference?.mode === 'reference' ? '已启用' : '未启用'}</summary>
@@ -272,6 +315,12 @@ export function VideoFirstPanel({ taskId, segments = [], ratio = '16:9', product
         <small>{h3Reference.note}</small>
       </details>
     ) : null}
+    {review?.error ? <p role="alert">{review.error}</p> : null}
+    {review?.status === 'planning' ? <p role="status">正在重新规划镜头，已有素材保留</p> : null}
+    {review && (review.can_replan || ['failed', 'unplanned'].includes(review.status) || (count > 0 && (review.shots?.length || 0) < count)) ? <div>
+      <button type="button" className="button button-secondary" onClick={replanDirector} disabled={busy || running || activeFlow || review.status === 'planning'}>重新规划镜头（保留素材）</button>
+      <small>重新规划会保留已有素材；镜头提示变化可能使已有视频过期。完成规划后需明确确认才会提交付费视频。</small>
+    </div> : null}
     {review ? <details className="video-first-continuity">
       <summary>一致性导演 · {review.shots?.length || 0} 个镜头 · {review.warnings?.length || 0} 项待复核</summary>
       <p>IP：{review.ip?.name || '未绑定'}{review.ip?.version ? ` · v${review.ip.version}` : ''}。
@@ -293,19 +342,23 @@ export function VideoFirstPanel({ taskId, segments = [], ratio = '16:9', product
     <div className="video-first-actions">
       <label>音频策略 <select value={activeAudioMode} disabled={running || activeFlow || busy}
         onChange={event => { void updateAudioMode(event.target.value) }}>
-        <option value="native">保留模型原生环境声</option>
+        <option value="native">保留模型原生声音（对白与环境声）</option>
         <option value="mute">移除原生声音，后期统一配音</option>
       </select></label>
       <label>单镜头时长 <select value={activeSeconds} onChange={event => setSeconds(Number(event.target.value))} disabled={running}>
         {durationOptions.map(value => <option value={value} key={value}>{value} 秒</option>)}
       </select></label>
+      <label><input type="checkbox" checked={activeSubtitles} onChange={event => setSubtitles(event.target.checked)} disabled={isMute || running || busy} />同步中文字幕（本地识别原生对白）</label>
+      <label>成片总长上限（秒，可选）<input type="number" min="0.1" step="0.1" placeholder={String(count * activeSeconds)} value={activeMaxDuration} onChange={event => setMaxDuration(event.target.value)} disabled={isMute || running || busy} /></label>
+      {!validMaxDuration ? <small role="alert">总长上限必须是大于 0 的秒数，留空使用项目默认预算。</small> : null}
+      {!isMute && ['delivery_blocked', 'completed'].includes(job.status) ? <button type="button" className="button button-secondary" disabled={busy || running || activeFlow || !validMaxDuration} onClick={retryDelivery}>重新处理字幕与交付（复用已有视频）</button> : null}
       {job.status === 'failed' ? <label className="video-first-retry">
         <input type="checkbox" checked={retryPaid} onChange={event => setRetryPaid(event.target.checked)} />
         允许重新提交失败镜头（可能额外收费）
       </label> : null}
       <button type="button" className="button button-primary"
         onClick={generate}
-        disabled={!available || busy || running || activeFlow || referenceBusy || (h3Reference?.mode === 'reference' && !h3Reference?.supports_reference)}>
+        disabled={review?.status === 'planning' || !validMaxDuration || !available || busy || running || activeFlow || referenceBusy || (h3Reference?.mode === 'reference' && !h3Reference?.supports_reference)}>
         {busy ? '正在提交…' : job.status === 'completed' ? '重新检查并生成动态成片' : '生成全片 AI 动态视频'}
       </button>
       {running && !activeFlow ? <button type="button" className="button button-secondary" disabled={busy}

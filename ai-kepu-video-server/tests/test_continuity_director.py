@@ -20,7 +20,7 @@ def planned_shots():
             "start_state": "主持人坐在桌边", "end_state": "主持人抬头看向小狗",
             "transition_to_next": "cut", "shot_type": "scene",
             "image_prompt": "Brown haired host and white dog in a cozy room with warm colors, wide shot",
-            "motion_prompt": "主持人抬头；小狗摇尾；[Static shot]；结尾对视",
+            "motion_prompt": "主持人坐在温暖客厅的桌边，保持固定的棕色头发、酒红色上衣和二维卡通画风，桌面道具与柔和侧光保持一致；主持人先缓缓抬头看向小狗，右手从桌面抬起指向面前道具，小狗轻轻摇尾并向主持人投去好奇目光，动作按顺序展开且幅度自然；[Static shot] 镜头保持全景与原有轴线，背景窗帘随微风轻动，光影平稳不过曝；结尾两者对视，主持人的手停在道具旁，小狗保持原站位，留下清晰稳定的收尾构图。",
         },
         {
             "index": 1,
@@ -29,7 +29,7 @@ def planned_shots():
             "start_state": "小狗在原来位置抬头", "end_state": "小狗看向左边",
             "transition_to_next": "match_cut", "shot_type": "portrait",
             "image_prompt": "Same little white dog in the warm room looking towards the host, close up portrait",
-            "motion_prompt": "小狗抬头；目光转移；[Push in]；收尾保持正面",
+            "motion_prompt": "小狗仍在客厅原来位置，保持白色毛发、固定体型以及温暖室内光线，画风继续使用粗黑轮廓和扁平色彩；小狗先轻轻抬头，耳朵随动作微微摆动，再将目光从主持人转向画面左边，前爪保持落地，身体不突然移动，尾巴有节奏地轻摆；[Push in] 镜头沿原轴线缓慢推进到面部特写，保留背景桌角的位置关系，景深逐渐柔化但主体保持清晰；收尾保持正面姿态，目光停留在左侧，耳朵与尾巴缓缓静止，给后续匹配剪辑留下稳定的形状与视线方向。",
         },
         {
             "index": 2,
@@ -38,7 +38,7 @@ def planned_shots():
             "start_state": "主持人站在黑板旁", "end_state": "主持人拿起粉笔",
             "transition_to_next": "continue", "shot_type": "scene",
             "image_prompt": "Same brown-haired host with fixed clothes standing in classroom holding a chalk",
-            "motion_prompt": "拿粉笔；动作缓慢；[Pan left]；镜头结束在黑板",
+            "motion_prompt": "主持人站在教室黑板旁，保持同样的棕色头发、酒红色上衣和温和表情，黑板与讲台的位置固定，环境保持二维卡通画风；主持人先向讲台伸出右手，缓慢拿起一支粉笔，将粉笔举到胸前并转头看向黑板，左手自然垂在身侧，动作连续平稳，避免道具凭空变化；[Pan left] 镜头从主持人所在位置缓慢向左摇移，逐渐将黑板纳入主体构图，室内柔光保持方向不变；镜头结束在黑板与主持人侧身的同框画面，右手握住粉笔停在黑板前，身体与视线稳定，留出清晰的下一镜头开场状态。",
         },
     ]
 
@@ -236,3 +236,159 @@ def test_mute_mode_drops_h3_native_audio_without_changing_source(tmp_path):
         "stream=codec_type", "-of", "csv=p=0", str(clip),
     ], capture_output=True, text=True, check=True, timeout=30)
     assert "audio" in original.stdout
+
+@pytest.mark.parametrize('response,stage,category', [
+    ('not json', 'parse', 'invalid_json'),
+    (json.dumps(fake_result([])), 'validation', 'incomplete_shots'),
+    (json.dumps(fake_result(planned_shots()[:1])), 'validation', 'incomplete_shots'),
+])
+def test_failed_short_plan_is_diagnosed_and_retried(monkeypatch, tmp_path, response, stage, category):
+    monkeypatch.setattr(Config, 'BASE_DIR', tmp_path)
+    class Model:
+        calls = 0
+        def _call_api(self, **kwargs):
+            self.calls += 1
+            return response
+    model = Model()
+    kwargs = dict(script='短文', segments=['第一句', '第二句'], summary='总结', style='动画', ratio='16:9')
+    result = storyboard_director.plan_storyboard('diagnostic', model, **kwargs)
+    assert result['status'] == 'failed'
+    assert result['error'] == {'stage': stage, 'category': category}
+    assert storyboard_director.load_plan('diagnostic')['error'] == result['error']
+    assert storyboard_director.lookup_shot('diagnostic', 0) == {}
+    storyboard_director.plan_storyboard('diagnostic', model, **kwargs)
+    assert model.calls == 2
+
+
+def test_provider_failure_diagnostics_never_copy_exception(monkeypatch, tmp_path, caplog):
+    monkeypatch.setattr(Config, 'BASE_DIR', tmp_path)
+    class Model:
+        def _call_api(self, **kwargs):
+            raise TimeoutError('api_key=secret-provider-response')
+    result = storyboard_director.plan_storyboard('safe_diagnostic', Model(), script='文', segments=['一句'], summary='', style='', ratio='16:9')
+    assert result['error'] == {'stage': 'provider', 'category': 'timeout'}
+    assert 'safe_diagnostic' in caplog.text
+    assert 'secret-provider-response' not in caplog.text
+    assert 'secret-provider-response' not in json.dumps(result)
+
+
+def test_missing_motion_script_is_not_successful_director_plan(monkeypatch, tmp_path):
+    monkeypatch.setattr(Config, 'BASE_DIR', tmp_path)
+    shots = planned_shots()[:1]
+    shots[0]['motion_prompt'] = ''
+    class Model:
+        def _call_api(self, **kwargs):
+            return json.dumps(fake_result(shots))
+    result = storyboard_director.plan_storyboard('missing_motion', Model(), script='文', segments=['一句'], summary='', style='', ratio='16:9')
+    assert result['status'] == 'failed'
+    assert result['error'] == {'stage': 'validation', 'category': 'invalid_shot_structure'}
+
+
+def test_short_plan_budget_includes_reasoning_and_detailed_shots(monkeypatch, tmp_path):
+    monkeypatch.setattr(Config, 'BASE_DIR', tmp_path)
+    class Model:
+        budget = None
+        def _call_api(self, **kwargs):
+            self.budget = kwargs['max_tokens']
+            return json.dumps(fake_result(planned_shots()[:2]))
+    model = Model()
+    storyboard_director.plan_storyboard('reasoning', model, script='文', segments=['一句', '二句'], summary='', style='', ratio='16:9')
+    assert model.budget >= 8000
+
+
+def test_review_exposes_failed_director_without_provider_details(monkeypatch):
+    from src.api import continuity_routes as routes
+    monkeypatch.setattr(routes.mysql_client, 'get_task', lambda _: {'task_id': 'failed'})
+    monkeypatch.setattr(routes.mysql_client, 'get_segments', lambda _: [{'segment_index': 0, 'text': '一句'}])
+    monkeypatch.setattr(routes, 'load_plan', lambda _: {'status': 'failed', 'error': {'stage': 'parse', 'category': 'invalid_json'}, 'shots': {}})
+    report = routes._report('failed')
+    assert report['status'] == 'failed'
+    assert report['planning_error'] == {'stage': 'parse', 'category': 'invalid_json'}
+    assert report['can_replan']
+
+
+def test_explicit_replan_is_background_and_preserves_assets(monkeypatch, tmp_path):
+    import asyncio
+    from src.api import continuity_routes as routes
+    from src.api.task_runtime import TaskRuntimeRegistry
+    monkeypatch.setattr(Config, 'BASE_DIR', tmp_path)
+    task = {'task_id': 'replan', 'script_text': '原文', 'summary': '总结', 'style': '卡通', 'ratio': '16:9'}
+    segments = [{'segment_index': 0, 'text': '第一句', 'image_path': '/saved/frame.png'}]
+    updates = []
+    monkeypatch.setattr(routes.mysql_client, 'get_task', lambda _: task)
+    monkeypatch.setattr(routes.mysql_client, 'get_segments', lambda _: segments)
+    monkeypatch.setattr(routes.mysql_client, 'production_list', lambda **_: [])
+    monkeypatch.setattr(routes.mysql_client, 'get_active_task_operation', lambda _: {})
+    monkeypatch.setattr(routes.mysql_client, 'create_task_operation', lambda **_: {'outcome': 'created', 'operation': {'operation_id': 'op', 'state': 'pending'}})
+    monkeypatch.setattr(routes.mysql_client, 'update_task_operation', lambda op, **values: updates.append(values) or True)
+    monkeypatch.setattr(video_first, 'status', lambda *args, **_: {'status': 'not_generated'})
+    monkeypatch.setattr(video_first.shot_video_jobs, 'status', lambda *args: {'status': 'not_generated'})
+    monkeypatch.setattr(routes, 'task_runtime', TaskRuntimeRegistry(), raising=False)
+    queued = []
+    class Pool:
+        def submit(self, function, *args):
+            queued.append((function, args))
+            class Future:
+                def cancel(self): return False
+            return Future()
+    monkeypatch.setattr(routes, 'generation_pool', Pool(), raising=False)
+    class Model:
+        def _call_api(self, **_): return json.dumps(fake_result(planned_shots()[:1]))
+    monkeypatch.setattr(routes, 'ArticleGenerator', Model, raising=False)
+    result = asyncio.run(routes.replan_director('replan'))
+    assert result['status'] == 'planning'
+    assert result['operation']['operation_id'] == 'op'
+    assert not storyboard_director.load_plan('replan')
+    assert len(queued) == 1
+    monkeypatch.setattr(routes.mysql_client, 'get_active_task_operation', lambda _: {'operation_id': 'op', 'kind': 'director_replan', 'state': 'pending'})
+    assert routes._report('replan')['status'] == 'planning'
+    queued[0][0](*queued[0][1])
+    assert storyboard_director.load_plan('replan')['status'] == 'completed'
+    assert updates[-1]['state'] == 'completed'
+    assert segments[0]['image_path'] == '/saved/frame.png'
+    assert not routes.task_runtime.is_running('replan')
+
+
+@pytest.mark.parametrize('active', ['video', 'production'])
+def test_replan_rejects_active_video_production(monkeypatch, active):
+    import asyncio
+    from fastapi import HTTPException
+    from src.api import continuity_routes as routes
+    monkeypatch.setattr(routes.mysql_client, 'get_task', lambda _: {'ratio': '16:9'})
+    monkeypatch.setattr(routes.mysql_client, 'get_segments', lambda _: [{'segment_index': 0, 'text': '文'}])
+    monkeypatch.setattr(routes.mysql_client, 'production_list', lambda **_: [{}] if active == 'production' else [])
+    monkeypatch.setattr(video_first, 'status', lambda *args, **_: {'status': 'generating' if active == 'video' else 'idle'})
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(routes.replan_director('busy'))
+    assert caught.value.status_code == 409
+
+
+def test_replan_constructor_failure_is_visible_and_safe(monkeypatch, tmp_path):
+    from src.api import continuity_routes as routes
+    from src.api.task_runtime import TaskRuntimeRegistry
+    monkeypatch.setattr(Config, 'BASE_DIR', tmp_path)
+    runtime = TaskRuntimeRegistry()
+    monkeypatch.setattr(routes, 'task_runtime', runtime)
+    updates = []
+    monkeypatch.setattr(routes.mysql_client, 'update_task_operation', lambda _, **values: updates.append(values))
+    def bad_model(): raise ValueError('api_key=provider-secret')
+    monkeypatch.setattr(routes, 'ArticleGenerator', bad_model)
+    token = runtime.begin('broken')
+    routes._replan_worker('broken', 'op', token, {}, ['文'])
+    plan = storyboard_director.load_plan('broken')
+    assert plan['status'] == 'failed'
+    assert plan['error']['stage'] == 'planning'
+    assert 'provider-secret' not in json.dumps(plan)
+    assert 'provider-secret' not in json.dumps(updates)
+    assert not runtime.is_running('broken')
+
+
+def test_short_motion_with_full_coverage_is_not_accepted(monkeypatch, tmp_path):
+    monkeypatch.setattr(Config, 'BASE_DIR', tmp_path)
+    shots = planned_shots()[:1]
+    shots[0]['motion_prompt'] = '保持角色；自然抬手；[Static shot]；保持稳定'
+    class Model:
+        def _call_api(self, **_): return json.dumps(fake_result(shots))
+    result = storyboard_director.plan_storyboard('short_motion', Model(), script='文', segments=['一句'], summary='', style='', ratio='16:9')
+    assert result['status'] == 'failed'
+    assert result['error'] == {'stage': 'validation', 'category': 'invalid_shot_structure'}

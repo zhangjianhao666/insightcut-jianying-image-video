@@ -14,6 +14,7 @@ import uuid
 from pathlib import Path
 
 from src.config import Config
+from src.api.task_runtime import task_runtime, TaskCancelled
 from src.media.minimax_i2v import MinimaxImageToVideo, MinimaxVideoError
 from src.media.wan_i2v import WanImageToVideo, WanVideoError
 
@@ -178,7 +179,7 @@ def matching_video_path(task_id, segment):
     return None
 
 
-def start(task_id, segment_index, image_path, prompt, *, duration=None, force_new=False, base=None, provider_factory=None, reference_assets=None):
+def start(task_id, segment_index, image_path, prompt, *, duration=None, force_new=False, base=None, provider_factory=None, reference_assets=None, cancellation=None):
     """Explicit user action only. Returns immediately; no paid batch dispatch."""
     image_path = str(Path(image_path).resolve())
     signature = _identity(image_path)
@@ -217,8 +218,14 @@ def start(task_id, segment_index, image_path, prompt, *, duration=None, force_ne
         provider = adapter_class()
         reuse_id = (
             existing.get("provider_task_id") if same_request and not force_new
-            and existing.get("status") in {"interrupted", "failed"} else None
+            and existing.get("status") in {"interrupted", "failed", "cancelled"} else None
         )
+        # A child retains a runtime lease after its parent exits. Deletion and
+        # shutdown must wait for provider polling and local writes to drain.
+        lease_id = "shot-video:" + uuid.uuid4().hex
+        child_token = task_runtime.register_video_child(task_id, lease_id, parent=cancellation)
+        if child_token is None:
+            raise ValueError("项目已有其他操作、正在删除或服务正在关闭")
         directory = _directory(task_id, base)
         record = {
             "status": "running", "image_signature": signature,
@@ -227,12 +234,19 @@ def start(task_id, segment_index, image_path, prompt, *, duration=None, force_ne
             "provider_task_id": reuse_id,
             "video_path": str(directory / f"{segment_index:04d}_{uuid.uuid4().hex}.mp4"),
         }
-        _write(task_id, segment_index, record, base)
-        _active.add(key)
+        try:
+            _write(task_id, segment_index, record, base)
+            _active.add(key)
+        except Exception:
+            task_runtime.finish_export(task_id, lease_id)
+            raise
 
     def work():
         with _slots:
             try:
+                child_token.raise_if_cancelled()
+                if cancellation is not None:
+                    cancellation.raise_if_cancelled()
                 if record["provider_task_id"]:
                     task = record["provider_task_id"]
                 elif reference_assets is not None:
@@ -249,20 +263,32 @@ def start(task_id, segment_index, image_path, prompt, *, duration=None, force_ne
                 provider.download(url, record["video_path"])
                 record["has_audio"] = _has_audio_track(record["video_path"])
                 record["status"] = "completed"
+            except TaskCancelled:
+                record["status"] = "cancelled"
+                record["error"] = "镜头生成已取消；已提交任务 ID 与本地素材保留"
             except Exception as exc:
                 record["status"] = "failed"
                 record["error"] = _failure_reason(exc)
                 logger.warning(
-                    "shot video %s#%s failed: %s", task_id, segment_index, exc,
-                    exc_info=True,
+                    "shot video %s#%s failed category=%s", task_id, segment_index, type(exc).__name__,
                 )
             finally:
-                with _lock:
-                    # Do not overwrite a newer request's record.
-                    if _read(task_id, segment_index, base).get("video_path") == record["video_path"]:
-                        _write(task_id, segment_index, record, base)
-                    _active.discard(key)
+                try:
+                    with _lock:
+                        # Do not overwrite a newer request's record.
+                        if _read(task_id, segment_index, base).get("video_path") == record["video_path"]:
+                            _write(task_id, segment_index, record, base)
+                finally:
+                    with _lock:
+                        _active.discard(key)
+                    task_runtime.finish_export(task_id, lease_id)
 
-    thread = threading.Thread(target=work, daemon=True, name=f"shot-i2v-{segment_index}")
-    thread.start()
+    try:
+        thread = threading.Thread(target=work, daemon=True, name=f"shot-i2v-{segment_index}")
+        thread.start()
+    except Exception:
+        with _lock:
+            _active.discard(key)
+        task_runtime.finish_export(task_id, lease_id)
+        raise
     return {"status": "running", "provider_task_id": reuse_id, "duration": duration}

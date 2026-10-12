@@ -18,7 +18,7 @@ import uuid
 from pathlib import Path
 
 from src.config import Config
-from src.media import h3_references, shot_video_jobs
+from src.media import h3_references, shot_video_jobs, native_delivery
 from src.text.storyboard_director import DEFAULT_MOTION_PROMPT, load_plan, lookup_shot
 from src.text.native_dialogue import compile_video_prompt
 from src.text.continuity import compose_motion_prompt
@@ -27,6 +27,7 @@ from src.utils.rendering import normalize_ratio
 MAX_SHOTS = 12
 _ACTIVE = set()
 _STOP = set()
+_TOKENS = {}
 _LOCK = threading.RLock()
 
 
@@ -236,7 +237,7 @@ def _current(task_id, segments, ratio=None):
             valid = False
     if not valid:
         state = "stale"
-    elif state in {"generating", "rendering"} and task_id not in _ACTIVE:
+    elif state in {"generating", "rendering", "transcribing", "subtitling", "verifying"} and task_id not in _ACTIVE:
         state = "interrupted"
     elif state == "completed":
         file = Path(record.get("output_path") or "/nonexistent")
@@ -245,13 +246,20 @@ def _current(task_id, segments, ratio=None):
     return {
         "status": state, "total": len(expected), "completed": completed,
         "shots": shots, "duration": record.get("duration"),
-        "error": record.get("error") if state in {"failed", "interrupted"} else None,
+        "error": record.get("error") if state in {"failed", "interrupted", "delivery_blocked"} else None,
         "has_video": state == "completed",
         "is_strict_video": True,
         "has_audio": bool(record.get("has_audio")),
         "audio_mode": record.get("audio_mode", "native"),
         "preferred_audio_mode": audio_preference(task_id),
         "job_id": record.get("job_id"),
+        "delivery_stage": record.get("delivery_stage"),
+        "delivery_error": record.get("delivery_error"),
+        "delivery_duration": record.get("delivery_duration"),
+        "max_duration": record.get("max_duration"),
+        "subtitles": record.get("subtitles", False),
+        "native_dialogue": record.get("native_dialogue", False),
+        "dialogue_verified": record.get("dialogue_verified", False),
     }
 
 
@@ -301,6 +309,12 @@ def _has_audio(path):
 
 
 def render_clips(paths, output, ratio="16:9", fps=30, audio_mode="native"):
+    from src.api.work_limits import render_slot
+    with render_slot:
+        return _render_clips(paths, output, ratio=ratio, fps=fps, audio_mode=audio_mode)
+
+
+def _render_clips(paths, output, ratio="16:9", fps=30, audio_mode="native"):
     """Concat clips with optional provider-audio mute for consistent voiceover later."""
     if audio_mode not in {"native", "mute"}:
         raise VideoFirstError("音频策略只支持 native 或 mute")
@@ -376,11 +390,14 @@ def request_stop(task_id):
         if task_id not in _ACTIVE:
             return False
         _STOP.add(task_id)
+        token = _TOKENS.get(task_id)
+        if token:
+            token.cancel()
         return True
 
 
 def start(task_id, segments, *, ratio="16:9", duration=None,
-          confirmed=False, force_new_failed=False, audio_mode=None):
+          confirmed=False, force_new_failed=False, audio_mode=None, subtitles=None, max_duration=None):
     """One explicit approval for up to MAX_SHOTS paid video generations."""
     if not confirmed:
         raise VideoFirstError("请确认所有待生成镜头将按云端视频模型用量计费")
@@ -389,32 +406,74 @@ def start(task_id, segments, *, ratio="16:9", duration=None,
     if audio_mode not in {"native", "mute"}:
         raise VideoFirstError("音频策略不支持此选项")
     duration = shot_video_jobs.default_duration() if duration is None else duration
+    from src.media.minimax_i2v import is_h3_model
+    config = shot_video_jobs._video_config()
+    is_native_h3 = shot_video_jobs.video_provider() == "minimax" and is_h3_model(config.get("model"))
+    subtitles = is_native_h3 and audio_mode == "native" if subtitles is None else bool(subtitles)
+    if subtitles and audio_mode != "native":
+        raise VideoFirstError("静音模式不能生成原生对白字幕")
+    max_duration = len(segments) * duration if max_duration is None and is_native_h3 and audio_mode == "native" else max_duration
+    if max_duration is not None:
+        import math
+        if not math.isfinite(float(max_duration)) or not 0 < float(max_duration) <= 3600:
+            raise VideoFirstError("总时长必须在 0–3600 秒之间")
+        if audio_mode != "native":
+            raise VideoFirstError("静音模式不能按原生对白时间轴裁剪，请取消总时长预算")
+    local_delivery = subtitles or max_duration is not None
+    if local_delivery:
+        try:
+            native_delivery.preflight()
+        except native_delivery.DeliveryError as error:
+            raise VideoFirstError(str(error)) from None
     shots = _shot_inputs(task_id, segments, ratio, duration)
     fingerprint = _fingerprint(shots, ratio, audio_mode)
     with _LOCK:
         if task_id in _ACTIVE:
             raise VideoFirstError("当前项目已在生成动态镜头，请稍后")
         existing = _load(task_id)
-        if existing.get("fingerprint") == fingerprint and existing.get("status") == "completed":
+        if (existing.get("fingerprint") == fingerprint and existing.get("status") == "completed"
+                and existing.get("subtitles", False) == subtitles
+                and existing.get("max_duration") == max_duration):
             if Path(existing.get("output_path") or "/nonexistent").is_file():
                 previous = _current(task_id, segments, ratio)
                 if previous.get("status") == "completed":
                     return previous
+        if is_native_h3:
+            needs_paid = any(not _matches_planned_clip(
+                shot_video_jobs.status(task_id, shot["index"], shot["image"]), shot
+            ) for shot in shots)
+            plan = load_plan(task_id) or {}
+            if needs_paid and (plan.get("status") == "failed"
+                               or set(plan.get("shots") or {}) != {str(i) for i in range(len(shots))}):
+                raise VideoFirstError("导演规划未完整覆盖镜头，请重新规划并审核后再确认付费生成；已有素材已保留")
         record = {
             "job_id": uuid.uuid4().hex,
             "status": "generating", "fingerprint": fingerprint,
             "shots": shots, "duration": duration, "ratio": ratio, "audio_mode": audio_mode,
             "completed": 0, "error": None,
+            "subtitles": subtitles, "max_duration": max_duration,
+            "native_dialogue": is_native_h3 and audio_mode == "native",
             "output_path": str(_directory(task_id) / "video_first.mp4"),
         }
-        _write(task_id, record)
+        from src.api.task_runtime import task_runtime
+        cancellation = task_runtime.begin(task_id)
+        if cancellation is None:
+            raise VideoFirstError("项目正在规划、写入或删除，请稍后重试")
+        try:
+            _write(task_id, record)
+        except Exception:
+            task_runtime.finish(task_id, cancellation)
+            raise
+        _TOKENS[task_id] = cancellation
         _STOP.discard(task_id)
         _ACTIVE.add(task_id)
 
     def work():
         try:
             paths = []
+            cancellation.raise_if_cancelled()
             for shot in shots:
+                cancellation.raise_if_cancelled()
                 with _LOCK:
                     if task_id in _STOP:
                         raise VideoFirstError("已停止后续付费镜头任务；已提交的任务仍可能产生费用")
@@ -430,6 +489,7 @@ def start(task_id, segments, *, ratio="16:9", duration=None,
                     kwargs = {
                         "duration": shot["duration"],
                         "force_new": force_new_failed and current.get("status") == "failed",
+                        "cancellation": cancellation,
                     }
                     if shot.get("reference_assets") is not None:
                         kwargs["reference_assets"] = shot["reference_assets"]
@@ -439,6 +499,7 @@ def start(task_id, segments, *, ratio="16:9", duration=None,
                     )
                     deadline = time.monotonic() + 1200
                     while time.monotonic() < deadline:
+                        cancellation.raise_if_cancelled()
                         with _LOCK:
                             if task_id in _STOP:
                                 raise VideoFirstError("已停止后续付费镜头任务；已提交的任务仍可能产生费用")
@@ -470,6 +531,9 @@ def start(task_id, segments, *, ratio="16:9", duration=None,
                 record["status"] = "rendering"
                 _write(task_id, record)
             clip_signatures = [shot_video_jobs._identity(path) for path in paths]
+            if local_delivery:
+                _finish_local_delivery(task_id, record, paths, clip_signatures, cancellation)
+                return
             final = (render_clips(paths, record["output_path"], ratio=ratio, audio_mode="mute")
                      if audio_mode == "mute"
                      else render_clips(paths, record["output_path"], ratio=ratio))
@@ -491,7 +555,7 @@ def start(task_id, segments, *, ratio="16:9", duration=None,
                 _write(task_id, record)
         except Exception as error:
             with _LOCK:
-                record["status"] = "failed"
+                record["status"] = "delivery_blocked" if local_delivery and len(paths) == len(shots) else "failed"
                 record["error"] = (
                     str(error) if isinstance(error, VideoFirstError)
                     else "视频生成或拼接失败，已完成的动态镜头仍保留，可重试"
@@ -502,8 +566,140 @@ def start(task_id, segments, *, ratio="16:9", duration=None,
             with _LOCK:
                 _ACTIVE.discard(task_id)
                 _STOP.discard(task_id)
+                _TOKENS.pop(task_id, None)
+            task_runtime.finish(task_id, cancellation)
 
-    threading.Thread(target=work, name=f"video-first-{task_id}", daemon=True).start()
+    from src.api.work_limits import generation_pool
+    _launch(task_id, work, cancellation, generation_pool)
+    return status(task_id, segments, ratio=ratio)
+
+
+def _launch(task_id, work, cancellation, pool):
+    from src.api.task_runtime import task_runtime
+    def cancelled():
+        # Successful Future.cancel means no worker can touch this record. The
+        # runtime may call this while holding its lifecycle lock; do not take
+        # _LOCK here (start acquires those two locks in the opposite order).
+        record = _load(task_id)
+        record.update(status="interrupted", error="任务已停止，已有视频保留，请明确重试本地交付或生产")
+        _write(task_id, record)
+        _ACTIVE.discard(task_id)
+        _STOP.discard(task_id)
+        _TOKENS.pop(task_id, None)
+        task_runtime.finish(task_id, cancellation)
+    try:
+        future = pool.submit(work)
+        cancellation.bind_future(future, cancelled)
+    except RuntimeError:
+        cancelled()
+        raise VideoFirstError("服务正在关闭，已有素材已保留") from None
+
+
+def _register_delivery_assets(task_id, metadata):
+    from src.database import mysql_client
+    for field, kind, label in (("subtitle_path", "subtitle", "原生对白 SRT"),
+                                ("vtt_path", "subtitle", "原生对白 VTT"),
+                                ("delivery_path", "video", "原生对白成片")):
+        path = metadata.get(field)
+        if path and Path(path).is_file():
+            asset = mysql_client.save_task_asset(task_id, kind, "native_delivery", path=path, label=label)
+            if not asset:
+                raise native_delivery.DeliveryError("交付资产登记失败，文件已保留，请重试本地交付")
+
+
+def _finish_local_delivery(task_id, record, paths, identities, cancellation=None):
+    def stage(value):
+        if cancellation and cancellation.is_cancelled():
+            raise native_delivery.DeliveryError("本地交付已停止，原始视频已保留")
+        if cancellation:
+            cancellation.raise_if_cancelled()
+        with _LOCK:
+            if task_id in _STOP:
+                raise native_delivery.DeliveryError("本地交付已停止，原始视频已保留")
+            if ([shot_video_jobs._identity(path) for path in paths] != identities
+                    or any(shot_video_jobs._identity(s["image"]) != s["signature"]
+                           or h3_references.fingerprint_now(task_id, s["image"], s.get("scene_id") or "")
+                           != s.get("reference_fingerprint", "first_frame") for s in record["shots"])):
+                raise native_delivery.DeliveryError("交付期间源素材已变化，原始文件已保留，请检查版本")
+            record["status"] = "verifying" if value == "publishing" else value
+            record["delivery_stage"] = value
+            _write(task_id, record)
+    try:
+        from src.api.work_limits import render_slot
+        with render_slot:
+            metadata = native_delivery.deliver(
+                paths, record["shots"], record["output_path"], ratio=record["ratio"],
+                max_duration=record.get("max_duration"), subtitles=record.get("subtitles", True),
+                stage_callback=stage,
+                asset_callback=lambda metadata: _register_delivery_assets(task_id, metadata),
+            )
+        _register_delivery_assets(task_id, metadata)
+        if cancellation and cancellation.is_cancelled():
+            raise native_delivery.DeliveryError("本地交付已停止，已有文件已保留")
+        with _LOCK:
+            record.update(metadata)
+            record.update(status="completed", delivery_stage="completed", delivery_error=None,
+                          error=None, clip_signatures=identities)
+            _write(task_id, record)
+    except native_delivery.DeliveryError as error:
+        with _LOCK:
+            record.update(status="delivery_blocked", delivery_error=str(error), error=str(error),
+                          clip_signatures=identities)
+            _write(task_id, record)
+
+
+def retry_delivery(task_id, segments, *, ratio="16:9", subtitles=True, max_duration=None):
+    """Only local work. Never replan or submit a paid provider job."""
+    with _LOCK:
+        if task_id in _ACTIVE:
+            raise VideoFirstError("当前项目正在生产，请稍后")
+        record = _load(task_id)
+        if not record.get("shots") or record.get("audio_mode", "native") != "native":
+            raise VideoFirstError("没有可交付的原生音轨任务")
+        current = _current(task_id, segments, ratio)
+        if current["status"] == "stale" or current["completed"] != len(record["shots"]):
+            raise VideoFirstError("原始镜头未全部完成或已过期，请检查素材；不会自动提交付费任务")
+        if max_duration is None:
+            max_duration = record.get("max_duration") or record.get("duration", 5)*len(record["shots"])
+        try:
+            native_delivery.preflight()
+        except native_delivery.DeliveryError as error:
+            raise VideoFirstError(str(error)) from None
+        paths = [shot_video_jobs.matching_video_path(task_id, {"segment_index":s["index"], "image_path":s["image"]})
+                 for s in record["shots"]]
+        if any(not path or not Path(path).is_file() for path in paths):
+            raise VideoFirstError("原始动态镜头缺失，不能继续本地交付")
+        identities = [shot_video_jobs._identity(path) for path in paths]
+        record.update(status="transcribing", delivery_stage="transcribing", subtitles=bool(subtitles),
+                      max_duration=max_duration, error=None, delivery_error=None, delivery_duration=None, dialogue_verified=False,
+                      native_dialogue=True)
+        from src.api.task_runtime import task_runtime
+        cancellation = task_runtime.begin(task_id)
+        if cancellation is None:
+            raise VideoFirstError("项目正在规划、写入或删除，请稍后重试")
+        try:
+            _write(task_id, record)
+        except Exception:
+            task_runtime.finish(task_id, cancellation)
+            raise
+        _TOKENS[task_id] = cancellation
+        _STOP.discard(task_id)
+        _ACTIVE.add(task_id)
+    def work():
+        try:
+            _finish_local_delivery(task_id, record, paths, identities, cancellation)
+        except Exception:
+            with _LOCK:
+                record.update(status="delivery_blocked", delivery_error="本地交付异常，原始视频已保留", error="本地交付异常，原始视频已保留")
+                _write(task_id, record)
+        finally:
+            with _LOCK:
+                _ACTIVE.discard(task_id)
+                _STOP.discard(task_id)
+                _TOKENS.pop(task_id, None)
+            task_runtime.finish(task_id, cancellation)
+    from src.api.work_limits import export_pool
+    _launch(task_id, work, cancellation, export_pool)
     return status(task_id, segments, ratio=ratio)
 
 

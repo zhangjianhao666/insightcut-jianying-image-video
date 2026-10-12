@@ -48,6 +48,7 @@ import { WorkspaceInspector } from '../components/WorkspaceInspector'
 import { WorkspaceSettingsOverlay } from '../components/WorkspaceSettingsOverlay'
 import { WorkspaceStoryboardNav } from '../components/WorkspaceStoryboardNav'
 import { WorkspaceStageNavigator } from '../components/WorkspaceStageNavigator'
+import { nativeVideoPresentation } from './nativeVideoState'
 import { VideoFirstPanel } from '../components/VideoFirstPanel'
 import { BrandLoader } from '../components/ui/BrandLoader'
 import { Lightbox } from '../components/ui/Lightbox'
@@ -222,6 +223,7 @@ export function WorkspacePage() {
   const [selectedVoice, setSelectedVoice] = useState('')
   const [ttsOptions, setTtsOptions] = useState({ speed_level: 'normal' })
   const [runtimeConfig, setRuntimeConfig] = useState(readRuntimeConfig)
+  const [nativeVideoStatus, setNativeVideoStatus] = useState(null)
   const [voicePreviewState, setVoicePreviewState] = useState(() => nextPreviewState())
   const voiceAudioRef = useRef(null)
   const previewTokenRef = useRef(0)
@@ -540,8 +542,10 @@ export function WorkspacePage() {
     || (previewJobIsActive && !previewJobPolling.error),
   )
   const activeStyle = visualStyles.find(style => style.value === workspace?.visual_style) || visualStyles[0]
-  const stage = stageMeta(workspace)
-  const journey = useMemo(() => deriveWorkspaceJourney(workspace || {}), [workspace])
+  const nativePresentation = nativeVideoStatus?.taskId === taskId ? nativeVideoPresentation(nativeVideoStatus.job) : null
+  const onNativeVideoStatus = useCallback(job => setNativeVideoStatus({ taskId, job }), [taskId])
+  const stage = nativePresentation?.stage || stageMeta(workspace)
+  const journey = nativePresentation?.journey || deriveWorkspaceJourney(workspace || {})
   const workspaceIssues = useMemo(() => collectWorkspaceIssues(workspace || {}), [workspace])
   const voiceReady = Boolean(workspace?.voice_confirmed && workspace?.voice_type)
   const visualPlanReady = Boolean(
@@ -1289,7 +1293,7 @@ export function WorkspacePage() {
             </button>)}
           </div>
         </section>
-        <VideoFirstPanel taskId={taskId} segments={segments} ratio={workspace.ratio} production={workspace.production} />
+        <VideoFirstPanel key={taskId} taskId={taskId} segments={segments} ratio={workspace.ratio} production={workspace.production} onStatusChange={onNativeVideoStatus} />
       </aside>
 
       <WorkspaceStoryboardNav
@@ -1368,7 +1372,10 @@ export function WorkspacePage() {
       />
     </div>
 
-    <WorkspaceActionBar
+    {nativePresentation ? <footer className="workspace-actionbar">
+      <div className="workspace-action-status"><strong>{stage.title}</strong><span>{stage.description}</span></div>
+      <button type="button" className="button button-secondary" onClick={() => document.querySelector('.video-first-panel')?.scrollIntoView({ behavior: 'smooth', block: 'center' })}>查看原生视频交付</button>
+    </footer> : <WorkspaceActionBar
       workspace={workspace}
       stage={stage}
       voiceReady={voiceReady}
@@ -1394,7 +1401,7 @@ export function WorkspacePage() {
       onFullVideo={createFullVideoPreview}
       onCancelFullVideo={cancelFullVideoPreview}
       onExport={enterExport}
-    />
+    />}
 
       <input ref={uploadInputRef} type="file" accept="image/jpeg,image/png,image/webp" hidden onChange={handleImageUpload} />
       <Lightbox

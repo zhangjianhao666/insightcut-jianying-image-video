@@ -66,7 +66,7 @@ def test_mocked_two_shot_video_production_and_reuse(monkeypatch, project):
     def fake_status(task_id, index, image_path):
         return {"status": "completed" if index in done else "not_generated"}
 
-    def fake_start(task_id, index, image_path, prompt, duration, force_new):
+    def fake_start(task_id, index, image_path, prompt, duration, force_new, cancellation=None):
         calls.append((index, duration, prompt, force_new))
         done.add(index)
         return {"status": "running"}

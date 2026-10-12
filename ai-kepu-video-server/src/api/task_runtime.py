@@ -153,6 +153,20 @@ class TaskRuntimeRegistry:
                 return None
             return self._exports.setdefault(task_id, {}).setdefault(job_id, TaskCancellation())
 
+    def register_video_child(self, task_id, job_id, parent=None):
+        """Allow sibling shot leases, but exclude unrelated project writers."""
+        with self._condition:
+            if self._closing or task_id in self._deleting:
+                return None
+            if parent is not None:
+                if self._tokens.get(task_id) is not parent:
+                    return None
+            elif task_id in self._tokens or any(
+                not key.startswith("shot-video:") for key in self._exports.get(task_id, {})
+            ):
+                return None
+            return self._exports.setdefault(task_id, {}).setdefault(job_id, TaskCancellation())
+
     def start_export(self, task_id, job_id):
         with self._condition:
             token = self._exports.get(task_id, {}).get(job_id)

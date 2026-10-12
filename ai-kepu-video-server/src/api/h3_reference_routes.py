@@ -30,7 +30,7 @@ def _context(task_id, *, editing=False):
     ))
     if editing:
         status = video_first.status(task_id, segments, ratio=task.get("ratio") or "16:9")
-        if status.get("status") in {"generating", "rendering"}:
+        if status.get("status") in {"generating", "rendering", "transcribing", "subtitling", "verifying"}:
             raise HTTPException(409, "正在生成整片，暂不能修改参考素材")
         if any(
             shot_video_jobs.status(task_id, int(seg.get("segment_index") or 0)).get("status") == "running"

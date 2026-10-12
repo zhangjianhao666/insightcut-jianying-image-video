@@ -125,7 +125,7 @@ def load_plan(task_id):
 
 def lookup_shot(task_id, index, text=None):
     plan = load_plan(task_id)
-    if not plan:
+    if not plan or plan.get("status") == "failed":
         return {}
     try:
         index = int(index)
@@ -149,7 +149,15 @@ def _write(task_id, plan):
         temporary.unlink(missing_ok=True)
 
 
-def plan_storyboard(task_id, generator, *, script, segments, summary, style, ratio):
+def record_planning_failure(task_id, *, stage, category, segments):
+    """Preserve prior plan details while making explicit replan failure visible."""
+    record = load_plan(task_id) or {"version": _PLAN_VERSION, "shots": {}, "visual_bible": {}}
+    record.update(status="failed", error={"stage": stage, "category": category}, segments=list(segments))
+    _write(task_id, record)
+    log.warning("[%s] 分镜导演规划失败 stage=%s category=%s", task_id, stage, category)
+
+
+def plan_storyboard(task_id, generator, *, script, segments, summary, style, ratio, force=False):
     """Build once per text/style revision. On model failure, caller falls back
     to individual image prompts. This must not erase existing shot assets.
     """
@@ -164,7 +172,10 @@ def plan_storyboard(task_id, generator, *, script, segments, summary, style, rat
     )
     fingerprint = _signature(script, segments, summary, style + profile_fingerprint, ratio)
     previous = load_plan(task_id)
-    if previous and previous.get("fingerprint") == fingerprint:
+    if (not force and previous and previous.get("fingerprint") == fingerprint
+            and previous.get("status") != "failed"
+            and (len(segments) > 12 or set(previous.get("shots") or {}) ==
+                 {str(i) for i in range(len(segments))})):
         return previous
 
     # For a long documentary, the model builds the shared bible only; the
@@ -223,17 +234,39 @@ def plan_storyboard(task_id, generator, *, script, segments, summary, style, rat
         f"\n分镜编号与对应旁白：{json.dumps(excerpt, ensure_ascii=False)}"
         + ip_prompt
     )
+    error = None
+    stage = "provider"
+    validation_category = "incomplete_shots"
     try:
         raw = generator._call_api(
             messages=[{"role": "user", "content": payload}],
-            # Detailed per-shot motion scripts need much more room than the
-            # old one-line prompts; scale with the shot count.
-            max_tokens=min(8000, max(4000, 600 * min(len(segments), 12))) if compact else 850,
+            # The budget includes reasoning as well as JSON output. The current
+            # DeepSeek model exhausted 4000 tokens before completing two shots.
+            # Keep room for detailed motion scripts and scale with shot count.
+            max_tokens=min(16000, max(8000, 1000 * min(len(segments), 12))) if compact else 4000,
         )
-        parsed = _normalize_plan(_json_object(raw), len(segments))
-    except Exception:
+        stage = "parse"
+        source = _json_object(raw)
+        parsed = _normalize_plan(source, len(segments))
+        stage = "validation"
+        if compact and set(parsed["shots"]) != {str(i) for i in range(len(segments))}:
+            raise ValueError("incomplete_shots")
+        if compact:
+            validation_category = "invalid_shot_structure"
+            for shot in source.get("shots") or []:
+                motion = str(shot.get("motion_prompt") or "").strip()
+                parts = re.split("[;；]", motion)
+                if (not 150 <= len(motion) <= 1800
+                        or len(parts) < 4 or not re.search(r"\[[A-Za-z][^\]]*\]", motion)
+                        or any(not shot.get(key) for key in ("camera", "start_state", "end_state"))):
+                    raise ValueError("invalid_shot_structure")
+    except Exception as failure:
         # Preserve original reliable generation path on model/JSON failure.
-        log.warning("全片分镜导演规划失败；继续使用逐分镜提示词生成")
+        from src.api.error_model import classify_exception
+        category = (classify_exception(failure).code.value if stage == "provider"
+                    else "invalid_json" if stage == "parse" else validation_category)
+        error = {"stage": stage, "category": category}
+        log.warning("[%s] 分镜导演规划失败 stage=%s category=%s", task_id, stage, category)
         parsed = {"visual_bible": {}, "shots": {}}
     if ip_bible:
         # Series identity always overrides per-episode model improvisation.
@@ -242,6 +275,7 @@ def plan_storyboard(task_id, generator, *, script, segments, summary, style, rat
         }
     record = {
         "version": _PLAN_VERSION, "fingerprint": fingerprint,
+        "status": "failed" if error else "completed", "error": error,
         "ip_id": (ip_profile or {}).get("ip_id"),
         "segments": list(segments), "visual_bible": parsed["visual_bible"],
         "shots": parsed["shots"],

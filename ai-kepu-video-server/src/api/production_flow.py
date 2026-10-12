@@ -156,7 +156,7 @@ class ProductionScheduler:
                     db.production_update(fid,state='completed',error=None)
                     db.update_task_workflow(tid,'ready',status='completed',current_step='completed')
                     r.task_manager.invalidate_task_cache(tid)
-                elif outcome['status'] in ('failed','interrupted','stale'):
+                elif outcome['status'] in ('failed','interrupted','stale','delivery_blocked'):
                     db.production_update(fid,state='failed',error=outcome.get('error') or '动态镜头生成中断，请检查并继续')
                 return
             job=r._export_job_snapshot(f['job_id'])
