@@ -3,6 +3,7 @@ import {
   ArrowLeft,
   CheckCircle2,
   CircleAlert,
+  Clapperboard,
   Cpu,
   Image,
   LoaderCircle,
@@ -41,8 +42,13 @@ import { EmptyState, LoadingState } from '../components/StatusStates'
 import { EmptyStateCard } from '../components/ui/EmptyStateCard'
 import {
   AGNES_PRESET,
+  HAILUO_MODELS,
   WAN_IMAGE_PRESET,
+  applyVideoModel,
+  applyVideoResolution,
+  isH3Model,
   chooseImageProvider,
+  chooseVideoProvider,
   normalizeConcurrency,
   normalizeConfig,
   normalizeRetryCount,
@@ -51,6 +57,8 @@ import {
   restoreMimoTechnicalPreset,
   validateConfig,
   validateTtsTest,
+  videoDurationOptions,
+  videoResolutionOptions,
 } from '../lib/settingsConfig'
 import {
   buildProviderRefreshPayload,
@@ -72,6 +80,7 @@ const WAN_SIZES = ['auto', '1280x720', '720x1280', '960x1280', '1280x960', '1024
 const SECTION_LINKS = [
   { id: 'settings-llm', label: '生文模型', icon: MessageSquareText },
   { id: 'settings-image', label: 'AI 生图', icon: Image },
+  { id: 'settings-video', label: 'AI 动态视频', icon: Clapperboard },
   { id: 'settings-tts', label: '配音模型', icon: Volume2 },
   { id: 'settings-runtime', label: '生成策略', icon: Cpu },
 ]
@@ -690,6 +699,50 @@ export function SettingsPage({ embedded = false, onClose }) {
               <label><span>Model</span><input value={form.image.model}
                 onChange={event => updateSection('image', 'model', event.target.value)}
                 placeholder={form.image.provider === 'wan' ? WAN_IMAGE_PRESET.model : AGNES_PRESET.model} /></label>
+            </AdvancedSettings>
+          </ConfigSection>
+
+          <ConfigSection id="settings-video" icon={Clapperboard} title="AI 动态视频" badge="Video" description="逐镜头图生视频，按镜头单独计费；MiniMax-H3 生成的片段自带音效，也可切回无声模型或百炼万相。">
+            <Field label="视频 Provider" wide group>
+              <Segmented value={form.video.provider} onChange={value => setForm(current => chooseVideoProvider(current, value))}
+                options={[['minimax', 'MiniMax 海螺'], ['wan', '百炼万相']]} />
+            </Field>
+            {form.video.provider === 'minimax' ? <>
+              <Field label="API Key"><input type="password" autoComplete="off" value={form.video.api_key}
+                onChange={event => updateSection('video', 'api_key', event.target.value)} placeholder="MiniMax API Key，不要提交 Git" /></Field>
+              <Field label="模型" wide><select value={form.video.model}
+                onChange={event => setForm(current => applyVideoModel(current, event.target.value))}>
+                {HAILUO_MODELS.map(model => <option value={model} key={model}>{model}</option>)}
+              </select></Field>
+              <Field label="分辨率" wide group>
+                <Segmented value={form.video.resolution} onChange={value => setForm(current => applyVideoResolution(current, value))}
+                  options={videoResolutionOptions(form.video.model).map(value => [value, value])} />
+              </Field>
+              <Field label="单镜头时长" wide><select value={form.video.duration ?? ''}
+                onChange={event => updateSection('video', 'duration', Number(event.target.value))}>
+                {videoDurationOptions('minimax', form.video.resolution, form.video.model).map(value =>
+                  <option value={value} key={value}>{value} 秒</option>)}
+              </select></Field>
+              <p className="settings-fixed-summary"><span>
+                {isH3Model(form.video.model)
+                  ? 'MiniMax-H3 生成 480P / 768P / 2K，单镜头 4–15 秒，成片自带环境音效与拟音（不是可编辑的旁白）；首帧图片以 Base64 直接上传，不需要公网图床。'
+                  : 'Hailuo 2.3 为无声模型：1080P 只支持 6 秒，768P 支持 6 或 10 秒；首帧图片以 Base64 直接上传，不需要公网图床。'}
+                动作提示词里可直接写运镜命令，例如 <code>[Push in]</code>、<code>[Static shot]</code>，共 15 种。
+              </span></p>
+            </> : <p className="settings-fixed-summary"><span>
+              百炼万相沿用当前工作空间的 /api/v1 地址与 LLM Key；服务地址留空即自动复用，单镜头支持 5、10、15 秒。
+            </span></p>}
+            <AdvancedSettings
+              title="高级配置"
+              summary={`${form.video.base_url || '自动复用'} · ${form.video.model || '默认模型'}`}
+              onRestore={() => setForm(current => chooseVideoProvider(current, current.video.provider))}
+            >
+              <label><span>服务地址</span><input value={form.video.base_url}
+                onChange={event => updateSection('video', 'base_url', event.target.value)}
+                placeholder={form.video.provider === 'minimax' ? 'https://api.minimax.cn' : '留空自动复用百炼地址'} /></label>
+              <label><span>Model</span><input value={form.video.model}
+                onChange={event => updateSection('video', 'model', event.target.value)}
+                placeholder={form.video.provider === 'minimax' ? 'MiniMax-H3' : '留空使用工作空间默认'} /></label>
             </AdvancedSettings>
           </ConfigSection>
 

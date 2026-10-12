@@ -162,6 +162,14 @@ class Config:
                     "speed_level": "normal",
                 },
             },
+            "video": {
+                "provider": (_env("VIDEO_PROVIDER", "") or "wan").strip().lower(),
+                "base_url": _env("VIDEO_BASE_URL", "").strip(),
+                "api_key": _env("VIDEO_API_KEY", "").strip(),
+                "model": _env("VIDEO_MODEL", "").strip(),
+                "resolution": _env("VIDEO_RESOLUTION", "").strip(),
+                "duration": _env_int("VIDEO_DURATION", 0) or None,
+            },
             "generation": {
                 "prompt_concurrency": 4,
                 "tts_concurrency": _clamp_int(_env("TTS_CONCURRENCY", "1"), 1, 1, 8),
@@ -190,7 +198,7 @@ class Config:
             return config
 
         config["revision"] = str(overrides.get("revision") or "legacy")
-        for section in ("llm", "image", "tts", "generation"):
+        for section in ("llm", "image", "tts", "video", "generation"):
             if isinstance(overrides.get(section), dict):
                 config[section].update({
                     key: value
@@ -207,7 +215,7 @@ class Config:
             incoming = config or {}
             if incoming.get("revision") and incoming["revision"] != current.get("revision"):
                 raise ConfigConflict("设置已在其他页面更新，请重新加载后重试")
-            for section in ("llm", "image", "tts", "generation"):
+            for section in ("llm", "image", "tts", "video", "generation"):
                 if isinstance(incoming.get(section), dict):
                     current[section].update({key: value for key, value in incoming[section].items() if value is not None})
             cls._normalize_model_config(current)
@@ -374,9 +382,47 @@ class Config:
         tts["mimo"] = mimo
 
     @classmethod
+    def _normalize_video_config(cls, config: dict) -> None:
+        from urllib.parse import urlparse
+
+        video = config.setdefault("video", {})
+        base_url = str(video.get("base_url") or "").strip()
+        provider = str(video.get("provider") or "").strip().lower()
+        if provider not in {"wan", "minimax"}:
+            host = (urlparse(base_url).hostname or "").lower()
+            provider = "minimax" if "minimax" in host else "wan"
+        video["provider"] = provider
+        video["base_url"] = base_url
+        video["api_key"] = str(video.get("api_key") or "").strip()
+
+        if provider == "minimax":
+            from src.media.minimax_i2v import MinimaxImageToVideo
+            video["base_url"] = base_url or MinimaxImageToVideo.DEFAULT_BASE_URL
+            video["model"] = (
+                str(video.get("model") or "").strip() or MinimaxImageToVideo.DEFAULT_MODEL
+            )
+            model = video["model"]
+            resolution = str(video.get("resolution") or "").strip().upper()
+            if resolution not in MinimaxImageToVideo.resolution_options(model):
+                resolution = MinimaxImageToVideo.default_resolution(model)
+            video["resolution"] = resolution
+            options = MinimaxImageToVideo.duration_options(resolution, model)
+            if video.get("duration") not in options:
+                video["duration"] = MinimaxImageToVideo.default_duration(model)
+            return
+
+        # Wan keeps resolving endpoint, key and model from the legacy
+        # environment/LLM/image sources so existing settings keep working.
+        video["model"] = str(video.get("model") or "").strip()
+        video["resolution"] = str(video.get("resolution") or "").strip()
+        if video.get("duration") not in (5, 10, 15):
+            video["duration"] = 5
+
+    @classmethod
     def _normalize_model_config(cls, config: dict) -> None:
         cls._normalize_llm_config(config)
         cls._normalize_tts_config(config)
+        cls._normalize_video_config(config)
         cls._normalize_generation_config(config)
 
     @classmethod
@@ -405,6 +451,10 @@ class Config:
     @classmethod
     def tts_config(cls) -> dict:
         return cls.load_model_config()["tts"]
+
+    @classmethod
+    def video_config(cls) -> dict:
+        return cls.load_model_config()["video"]
 
     @classmethod
     def generation_config(cls) -> dict:

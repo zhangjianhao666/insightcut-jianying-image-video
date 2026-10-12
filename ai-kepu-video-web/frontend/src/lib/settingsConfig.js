@@ -10,6 +10,96 @@ export const AGNES_PRESET = {
   model: 'agnes-image-2.1-flash',
 }
 
+export const VIDEO_PRESETS = {
+  minimax: {
+    base_url: 'https://api.minimax.cn',
+    // H3 is the audio-capable family, so it is the default new-project model.
+    model: 'MiniMax-H3',
+    resolution: '768P',
+    duration: 6,
+  },
+  wan: {
+    base_url: '',
+    model: '',
+    resolution: '',
+    duration: 5,
+  },
+}
+
+export const H3_MODELS = ['MiniMax-H3', 'MiniMax-H3-Max']
+export const HAILUO_MODELS = [
+  ...H3_MODELS,
+  'MiniMax-Hailuo-2.3',
+  'MiniMax-Hailuo-2.3-Fast',
+  'MiniMax-Hailuo-02',
+]
+export const H3_RESOLUTIONS = ['480P', '768P', '2K']
+export const HAILUO_RESOLUTIONS = ['1080P', '768P']
+const HAILUO_DURATIONS = { '1080P': [6], '768P': [6, 10] }
+export const H3_DURATIONS = [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+
+export function isH3Model(model) {
+  return H3_MODELS.includes(model) || String(model || '').startsWith('MiniMax-H3')
+}
+
+export function videoResolutionOptions(model) {
+  return isH3Model(model) ? H3_RESOLUTIONS : HAILUO_RESOLUTIONS
+}
+
+export function videoDurationOptions(provider, resolution, model) {
+  if (provider !== 'minimax') return [5, 10, 15]
+  if (isH3Model(model)) return H3_DURATIONS
+  return HAILUO_DURATIONS[resolution] || [6]
+}
+
+export function chooseVideoProvider(config, provider) {
+  const next = provider === 'minimax' ? 'minimax' : 'wan'
+  const preset = VIDEO_PRESETS[next]
+  const current = config.video || {}
+  const options = videoDurationOptions(next, preset.resolution, preset.model)
+  const duration = Number(current.duration)
+  return {
+    ...config,
+    video: {
+      ...preset,
+      provider: next,
+      api_key: current.api_key || '',
+      duration: options.includes(duration) ? duration : preset.duration,
+    },
+  }
+}
+
+export function applyVideoModel(config, model) {
+  const resolutions = videoResolutionOptions(model)
+  const resolution = resolutions.includes(config.video?.resolution)
+    ? config.video.resolution
+    : resolutions[0]
+  const options = videoDurationOptions('minimax', resolution, model)
+  const duration = Number(config.video?.duration)
+  return {
+    ...config,
+    video: {
+      ...config.video,
+      model,
+      resolution,
+      duration: options.includes(duration) ? duration : options[0],
+    },
+  }
+}
+
+export function applyVideoResolution(config, resolution) {
+  const options = videoDurationOptions('minimax', resolution, config.video?.model)
+  const duration = Number(config.video?.duration)
+  return {
+    ...config,
+    video: {
+      ...config.video,
+      resolution,
+      duration: options.includes(duration) ? duration : options[0],
+    },
+  }
+}
+
 export const MIMO_PRESET = {
   base_url: 'https://token-plan-sgp.xiaomimimo.com/v1',
   model: 'mimo-v2.5-tts',
@@ -123,6 +213,15 @@ export function normalizeConfig(config = {}) {
         speed_level: normalizeSpeedLevel(source.tts?.mimo?.speed_level),
       },
     },
+    video: {
+      ...(source.video || {}),
+      provider: source.video?.provider === 'minimax' ? 'minimax' : 'wan',
+      base_url: source.video?.base_url || '',
+      api_key: source.video?.api_key || '',
+      model: source.video?.model || '',
+      resolution: source.video?.resolution || '',
+      duration: Number.isFinite(Number(source.video?.duration)) ? Number(source.video.duration) : null,
+    },
     generation: {
       ...(source.generation || {}),
       prompt_concurrency: normalizeConcurrency(source.generation?.prompt_concurrency, 4),
@@ -217,6 +316,8 @@ export function validateConfig(config, llmProvider = null) {
   if (!config.image.api_url.trim()) return '请输入生图 API URL'
   if (!config.image.api_key.trim()) return '请输入生图 API Key'
   if (!config.image.model.trim()) return '请输入生图模型'
+  // Video credentials are intentionally not a save blocker: the per-shot
+  // generator is opt-in and validates its own configuration when invoked.
 
   // The settings page can be saved without paid TTS credentials when the
   // creator explicitly enables no-narration. Real TTS projects still use

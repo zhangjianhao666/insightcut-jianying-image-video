@@ -19,14 +19,13 @@ from pathlib import Path
 
 from src.config import Config
 from src.media import shot_video_jobs
-from src.text.storyboard_director import lookup_shot
+from src.text.storyboard_director import DEFAULT_MOTION_PROMPT, lookup_shot
 from src.utils.rendering import normalize_ratio
 
 MAX_SHOTS = 12
 _ACTIVE = set()
 _STOP = set()
 _LOCK = threading.RLock()
-DEFAULT_MOTION = "保持首帧人物与服装、画面布局一致；人物有轻微自然动作，镜头平稳缓慢推进，不改变角色外貌，不出现文字。"
 
 
 class VideoFirstError(ValueError):
@@ -68,8 +67,9 @@ def _write(task_id, record):
 def _shot_inputs(task_id, segments, ratio, duration):
     if not segments or len(segments) > MAX_SHOTS:
         raise VideoFirstError(f"视频优先模式支持 1–{MAX_SHOTS} 个分镜，建议先做短片验收")
-    if duration not in (5, 10, 15):
-        raise VideoFirstError("单镜头时长只能是 5、10 或 15 秒")
+    options = shot_video_jobs.duration_options()
+    if duration not in options:
+        raise VideoFirstError("单镜头时长只能是 " + "、".join(str(value) for value in options) + " 秒")
     result = []
     for segment in sorted(segments, key=lambda row: int(row.get("segment_index") or 0)):
         index = int(segment.get("segment_index") or 0)
@@ -79,13 +79,13 @@ def _shot_inputs(task_id, segments, ratio, duration):
         direction = lookup_shot(task_id, index, segment.get("text") or "")
         motion_prompt = str(direction.get("motion_prompt") or "").strip()
         if not motion_prompt:
-            motion_prompt = DEFAULT_MOTION
+            motion_prompt = DEFAULT_MOTION_PROMPT
         result.append({
             "index": index,
             "image": str(Path(image).resolve()),
             "signature": shot_video_jobs._identity(image),
             "text": str(segment.get("text") or ""),
-            "motion_prompt": motion_prompt[:1500],
+            "motion_prompt": motion_prompt[:1800],
             "duration": duration,
         })
     return result
@@ -161,7 +161,7 @@ def _current(task_id, segments, ratio=None):
         "error": record.get("error") if state in {"failed", "interrupted"} else None,
         "has_video": state == "completed",
         "is_strict_video": True,
-        "has_audio": False,
+        "has_audio": bool(record.get("has_audio")),
         "job_id": record.get("job_id"),
     }
 
@@ -198,8 +198,21 @@ def _probe(path):
     return duration
 
 
+def _has_audio(path):
+    """True when a clip carries its own audio track (e.g. MiniMax-H3)."""
+    ffprobe = shutil.which("ffprobe")
+    if not ffprobe:
+        return False
+    result = subprocess.run(
+        [ffprobe, "-v", "error", "-select_streams", "a",
+         "-show_entries", "stream=codec_type", "-of", "csv=p=0", str(path)],
+        capture_output=True, text=True, timeout=30, encoding="utf-8", errors="replace",
+    )
+    return result.returncode == 0 and "audio" in result.stdout
+
+
 def render_clips(paths, output, ratio="16:9", fps=30):
-    """Strict video-only concat; rejects missing clips instead of Ken Burns."""
+    """Concat clips in order; keep provider audio when the model produced it."""
     if not paths or any(not Path(path).is_file() for path in paths):
         raise VideoFirstError("有动态视频片段缺失，禁止用图片替代")
     ratio = normalize_ratio(ratio)
@@ -212,23 +225,38 @@ def render_clips(paths, output, ratio="16:9", fps=30):
     destination.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="video-first-", dir=destination.parent) as temp:
         temp_dir = Path(temp)
+        # A provider that returns native audio (MiniMax-H3) keeps its track;
+        # silent providers keep the original video-only render.
+        clip_audio = [_has_audio(path) for path in paths]
+        keep_audio = any(clip_audio)
         normalized = []
         for i, path in enumerate(paths):
             _probe(path)
             target = temp_dir / f"scene_{i:04d}.mp4"
             # Normalize geometry, FPS, pixels, codec and stream timebase.
-            # Critically: -an ensures no TTS/voiceover is mixed into output.
             filters = (
                 f"fps={fps},scale={width}:{height}:force_original_aspect_ratio=decrease,"
                 f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,"
                 f"setsar=1,format=yuv420p,setpts=PTS-STARTPTS"
             )
-            _exec([
-                ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
-                "-i", str(path), "-map", "0:v:0", "-an", "-vf", filters,
-                "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
-                "-r", str(fps), "-video_track_timescale", "30000", str(target),
-            ])
+            command = [ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-i", str(path)]
+            if not keep_audio:
+                command += ["-map", "0:v:0", "-an"]
+            elif clip_audio[i]:
+                command += ["-map", "0:v:0", "-map", "0:a:0"]
+            else:
+                # Keep the concat uniform: silent clips get a matching
+                # silent track so every segment has the same stream layout.
+                command += [
+                    "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000",
+                    "-map", "0:v:0", "-map", "1:a:0", "-shortest",
+                ]
+            command += ["-vf", filters, "-c:v", "libx264", "-preset", "veryfast",
+                        "-crf", "21", "-r", str(fps), "-video_track_timescale", "30000"]
+            if keep_audio:
+                command += ["-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-ac", "2"]
+            command.append(str(target))
+            _exec(command)
             normalized.append(target)
         manifest = temp_dir / "concat.txt"
         manifest.write_text(
@@ -237,11 +265,13 @@ def render_clips(paths, output, ratio="16:9", fps=30):
             encoding="utf-8",
         )
         staged = temp_dir / "assembled.mp4"
-        _exec([
+        concat = [
             ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-f", "concat",
-            "-safe", "0", "-i", str(manifest), "-map", "0:v:0", "-an",
-            "-c:v", "copy", "-movflags", "+faststart", str(staged),
-        ])
+            "-safe", "0", "-i", str(manifest), "-map", "0:v:0",
+        ]
+        concat += ["-map", "0:a:0", "-c:a", "copy"] if keep_audio else ["-an"]
+        concat += ["-c:v", "copy", "-movflags", "+faststart", str(staged)]
+        _exec(concat)
         final_duration = _probe(staged)
         if final_duration < len(paths) * 1.0:
             raise VideoFirstError("视频拼接异常：总时长过短")
@@ -258,12 +288,13 @@ def request_stop(task_id):
         return True
 
 
-def start(task_id, segments, *, ratio="16:9", duration=5,
+def start(task_id, segments, *, ratio="16:9", duration=None,
           confirmed=False, force_new_failed=False):
     """One explicit approval for up to MAX_SHOTS paid video generations."""
     if not confirmed:
         raise VideoFirstError("请确认所有待生成镜头将按云端视频模型用量计费")
     ratio = normalize_ratio(ratio)
+    duration = shot_video_jobs.default_duration() if duration is None else duration
     shots = _shot_inputs(task_id, segments, ratio, duration)
     fingerprint = _fingerprint(shots, ratio)
     with _LOCK:
@@ -346,6 +377,7 @@ def start(task_id, segments, *, ratio="16:9", duration=5,
             with _LOCK:
                 record["status"] = "completed"
                 record["clip_signatures"] = clip_signatures
+                record["has_audio"] = _has_audio(final)
                 record["error"] = None
                 _write(task_id, record)
         except Exception as error:

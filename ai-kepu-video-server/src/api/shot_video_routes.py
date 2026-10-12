@@ -8,13 +8,15 @@ from pydantic import BaseModel, Field
 
 from src.database import mysql_client
 from src.media import shot_video_jobs
+from src.media.minimax_i2v import MinimaxVideoError
+from src.media.wan_i2v import WanVideoError
 
 router = APIRouter(prefix="/ai/native/video/kepu", tags=["shot-video"])
 
 
 class CreateShotVideo(BaseModel):
-    prompt: str = Field(..., min_length=1, max_length=1500)
-    duration: int = Field(default=5, ge=2, le=15)
+    prompt: str = Field(..., min_length=1, max_length=1800)
+    duration: int | None = Field(default=None, ge=2, le=15)
     force_new: bool = False
 
 
@@ -39,9 +41,13 @@ def _view(task_id: str, index: int, segment: dict, request: Request) -> dict:
     return {
         "status": state,
         "duration": item.get("duration"),
+        "duration_options": list(shot_video_jobs.duration_options()),
+        "default_duration": shot_video_jobs.default_duration(),
+        "video_provider": shot_video_jobs.video_provider(),
         "prompt": item.get("prompt"),
         "video_url": str(request.url_for("get_shot_video_file", task_id=task_id, segment_index=index))
                      if state == "completed" else None,
+        "has_audio": bool(item.get("has_audio")),
         "has_saved_task": bool(item.get("provider_task_id")),
         "error": item.get("error") if state in {"failed", "interrupted"} else None,
     }
@@ -69,8 +75,12 @@ async def generate_shot_video(
         )
     except (ValueError, OSError) as exc:
         raise HTTPException(400, str(exc)) from exc
+    except (WanVideoError, MinimaxVideoError) as exc:
+        # Carry the provider's sanitised reason (bad key, quota, sensitive
+        # prompt) instead of hiding it behind a generic message.
+        raise HTTPException(503, str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(503, "无法启动万相任务，请检查百炼 API Key 和模型配置") from exc
+        raise HTTPException(503, "无法启动视频生成任务，请检查视频模型配置和 API Key") from exc
     return _view(task_id, segment_index, segment, request)
 
 

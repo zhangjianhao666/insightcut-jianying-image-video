@@ -32,7 +32,7 @@ def confirm(task_id, payload):
         if len(segments) > MAX_SHOTS:
             raise HTTPException(409, f'当前有 {len(segments)} 个镜头，视频优先模式第一版最多支持 {MAX_SHOTS} 个；请减少分镜再确认费用')
         if payload.get('confirm_paid_video') is not True:
-            raise HTTPException(400, '请确认万相将为每个镜头生成付费动态视频')
+            raise HTTPException(400, '请确认视频模型将为每个镜头生成付费动态视频')
     if row.get('workflow_phase') == 'planning' or row.get('status') == 'pending':
         raise HTTPException(409, '预案仍在生成中')
     if not r._workspace_health(row, segments)['assets_complete']:
@@ -127,10 +127,10 @@ class ProductionScheduler:
             if row.get('voice_type') == 'silent:default':
                 # Approved visual-first route. Actual Wan videos are mandatory,
                 # never silently replaced by Ken Burns/static images.
-                from src.media import video_first
+                from src.media import shot_video_jobs, video_first
                 outcome=video_first.start(
                     tid,segments,ratio=row.get('ratio') or '16:9',
-                    duration=5,confirmed=True,
+                    duration=shot_video_jobs.default_duration(),confirmed=True,
                 )
                 db.production_update(fid,state='rendering',job_id=outcome.get('job_id'))
                 return

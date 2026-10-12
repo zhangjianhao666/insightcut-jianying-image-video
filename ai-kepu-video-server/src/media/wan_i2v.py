@@ -18,6 +18,15 @@ class WanVideoError(RuntimeError):
 
 
 class WanImageToVideo:
+    @classmethod
+    def duration_options(cls, resolution=None, model=None):
+        return (5, 10, 15)
+
+    @classmethod
+    def supports_audio(cls, model=None):
+        # The Wan branch deliberately disables model audio; narration owns sound.
+        return False
+
     def __init__(self, api_key=None, base_url=None, model=None, session=None):
         from src.config import Config
         configured = Config.load_model_config()

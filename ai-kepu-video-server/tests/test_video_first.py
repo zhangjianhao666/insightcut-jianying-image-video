@@ -8,12 +8,15 @@ from pathlib import Path
 import pytest
 
 from src.config import Config
-from src.media import video_first
+from src.media import shot_video_jobs, video_first
 
 
 @pytest.fixture
 def project(monkeypatch, tmp_path):
     monkeypatch.setattr(Config, "BASE_DIR", tmp_path)
+    # These tests mock the legacy Wan clip lengths; never inherit whatever
+    # video provider the developer happens to have configured locally.
+    monkeypatch.setattr(shot_video_jobs, "video_provider", lambda: "wan")
     monkeypatch.setattr(
         video_first, "lookup_shot",
         lambda task_id, index, text: {"motion_prompt": "镜头缓慢移动，保持主角外观"}
@@ -113,31 +116,72 @@ def test_mocked_two_shot_video_production_and_reuse(monkeypatch, project):
     not shutil.which("ffmpeg") or not shutil.which("ffprobe"),
     reason="needs installed FFmpeg tools",
 )
-def test_ffmpeg_joins_only_real_mp4_and_strips_audio(tmp_path):
+def _probe_streams(path):
+    probe = subprocess.run([
+        shutil.which("ffprobe"), "-v", "error",
+        "-show_entries", "stream=codec_type,width,height:format=duration",
+        "-of", "json", str(path),
+    ], capture_output=True, text=True, check=True, timeout=30)
+    return json.loads(probe.stdout)
+
+
+def _make_clip(path, color, audio):
+    command = [
+        shutil.which("ffmpeg"), "-hide_banner", "-loglevel", "error", "-y",
+        "-f", "lavfi", "-i", f"color=c={color}:s=320x180:d=1.4",
+    ]
+    if audio:
+        command += [
+            "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=24000:duration=1.4",
+            "-map", "0:v", "-map", "1:a",
+            "-c:v", "mpeg4", "-c:a", "aac", "-shortest", str(path),
+        ]
+    else:
+        command += ["-map", "0:v", "-c:v", "mpeg4", str(path)]
+    subprocess.run(command, check=True, timeout=30)
+
+
+def test_ffmpeg_joins_real_mp4_and_keeps_provider_audio(tmp_path):
+    """MiniMax-H3 clips carry their own track; the final render keeps it."""
     clips = []
     for i in range(2):
         clip = tmp_path / f"real-{i}.mp4"
-        command = [
-            shutil.which("ffmpeg"), "-hide_banner", "-loglevel", "error", "-y",
-            "-f", "lavfi", "-i", f"color=c={['blue','red'][i]}:s=320x180:d=1.4",
-            "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=24000:duration=1.4",
-            "-map", "0:v", "-map", "1:a",
-            "-c:v", "mpeg4", "-c:a", "aac", "-shortest", str(clip),
-        ]
-        subprocess.run(command, check=True, timeout=30)
+        _make_clip(clip, ["blue", "red"][i], audio=True)
         clips.append(str(clip))
 
     output = tmp_path / "final.mp4"
     result = video_first.render_clips(clips, output, ratio="16:9")
     assert Path(result).is_file()
-    probe = subprocess.run([
-        shutil.which("ffprobe"), "-v", "error",
-        "-show_entries", "stream=codec_type,width,height:format=duration",
-        "-of", "json", str(output),
-    ], capture_output=True, text=True, check=True, timeout=30)
-    data = json.loads(probe.stdout)
-    streams = data["streams"]
-    assert len(streams) == 1
-    assert streams[0]["codec_type"] == "video"
-    assert streams[0]["width"] == 1280 and streams[0]["height"] == 720
+    data = _probe_streams(output)
+    kinds = [stream["codec_type"] for stream in data["streams"]]
+    assert kinds == ["video", "audio"]
+    video = data["streams"][0]
+    assert video["width"] == 1280 and video["height"] == 720
     assert 2.4 <= float(data["format"]["duration"]) <= 3.5
+
+
+def test_ffmpeg_renders_silent_provider_clips_without_audio(tmp_path):
+    """A silent provider (Wan / Hailuo 2.3) must not invent an audio track."""
+    clips = []
+    for i in range(2):
+        clip = tmp_path / f"silent-{i}.mp4"
+        _make_clip(clip, ["green", "yellow"][i], audio=False)
+        clips.append(str(clip))
+
+    output = tmp_path / "silent-final.mp4"
+    video_first.render_clips(clips, output, ratio="16:9")
+    data = _probe_streams(output)
+    assert [stream["codec_type"] for stream in data["streams"]] == ["video"]
+
+
+def test_ffmpeg_pads_a_missing_track_when_only_some_clips_have_audio(tmp_path):
+    """A mixed batch must still concat: silent shots get a silent track."""
+    first = tmp_path / "with-audio.mp4"
+    second = tmp_path / "without-audio.mp4"
+    _make_clip(first, "blue", audio=True)
+    _make_clip(second, "red", audio=False)
+
+    output = tmp_path / "mixed-final.mp4"
+    video_first.render_clips([str(first), str(second)], output, ratio="16:9")
+    data = _probe_streams(output)
+    assert [stream["codec_type"] for stream in data["streams"]] == ["video", "audio"]

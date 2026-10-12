@@ -11,14 +11,14 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from src.database import mysql_client
-from src.media import video_first
+from src.media import shot_video_jobs, video_first
 
 router = APIRouter(prefix="/ai/native/video/kepu", tags=["video-first"])
 
 
 class StartVideoFirst(BaseModel):
     confirm_paid_generation: bool = Field(default=False)
-    duration: int = Field(default=5)
+    duration: int | None = Field(default=None)
     force_new_failed: bool = Field(default=False)
 
 
@@ -38,6 +38,9 @@ def _view(task_id, task, segments, request):
     )
     value["requires_all_motion_clips"] = True
     value["narration_required"] = False
+    value["video_provider"] = shot_video_jobs.video_provider()
+    value["duration_options"] = list(shot_video_jobs.duration_options())
+    value["default_duration"] = shot_video_jobs.default_duration()
     return value
 
 
@@ -52,13 +55,18 @@ async def start_video_first(task_id: str, data: StartVideoFirst, request: Reques
     task, segments = await asyncio.to_thread(_project, task_id)
     if not data.confirm_paid_generation:
         raise HTTPException(400, "必须明确确认图生视频模型的付费调用")
-    if data.duration not in (5, 10, 15):
-        raise HTTPException(400, "单分镜视频生成仅支持 5、10 或 15 秒")
+    duration = shot_video_jobs.default_duration() if data.duration is None else data.duration
+    options = shot_video_jobs.duration_options()
+    if duration not in options:
+        raise HTTPException(
+            400,
+            "单分镜视频生成仅支持 " + "、".join(str(value) for value in options) + " 秒",
+        )
     try:
         await asyncio.to_thread(
             video_first.start, task_id, segments,
             ratio=task.get("ratio") or "16:9",
-            duration=data.duration,
+            duration=duration,
             confirmed=True,
             force_new_failed=data.force_new_failed,
         )

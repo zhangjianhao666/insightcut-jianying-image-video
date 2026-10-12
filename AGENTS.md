@@ -133,6 +133,20 @@ npm run dev
 - **VoiceClone 安全与限制**：必须确认声音授权；参考音频转为 Base64 后不得超过 10 MB。小米没有远端保存 `voice_id` 机制，每次克隆合成都从本地临时组装 `data:audio/wav;base64,...` 作为 `audio.voice`；DataURL 不得写入数据库、配置或日志。
 - **VoiceClone 生命周期**：状态为 `draft/ready/failed/hidden`；只有试听成功的克隆音色才能启用。已被任务引用的克隆音色删除时只做隐藏，未引用的才删除本地文件。克隆失败也必须保留参考音频和已生成试听。
 
+### 生视频模块（图生视频 I2V）
+
+`video.provider` 选择逐镜头图生视频服务商，配置保存在 `data/config.json` 的 `video` 段，也可在设置页「AI 动态视频」修改：
+
+- **MiniMax 海螺 v1（`provider=minimax`）**：`base_url` 默认 `https://api.minimax.cn`，模型 `MiniMax-Hailuo-2.3` / `MiniMax-Hailuo-2.3-Fast` / `MiniMax-Hailuo-02`。提交 `POST /v1/video_generation`（`prompt` + `first_frame_image`），查询 `GET /v1/query/video_generation?task_id=`，取地址 `GET /v1/files/retrieve?file_id=`。首帧以 Base64 Data URL 提交，不需要公网图床；**输出无音轨**。
+- **MiniMax-H3 / MiniMax-H3-Max（`provider=minimax`，当前默认模型）**：走**另一套 `POST /v2/video_generation`**，body 用多模态 `content` 数组（`text` + `image_url`，另支持 `video_url`/`audio_url`）；`duration` 为 4–15 秒整数，`resolution` 为 `480P / 768P / 2K`，`ratio` 必填并按首帧宽高比自动推断（可选 `adaptive/16:9/4:3/1:1/3:4/9:16/21:9`）。查询与下载仍走 v1 的 `query/video_generation` 与 `files/retrieve`。**成片自带 AAC 音轨**（实测 32kHz 立体声，环境音效与拟音，不是可编辑旁白）。v2 不接受 Hailuo 2.3 系列模型。
+- **海螺 v1 时长与分辨率**：`resolution` 支持 `1080P`（仅 6 秒）与 `768P`（6 或 10 秒）；`duration` 必须落在当前模型 + 分辨率的合法集合内，服务商自身也会校验。
+- **音轨保留**：`video_first.render_clips()` 会逐片段探测；只要有片段自带音轨就保留，并在 concat 时统一 `-c:a aac`，无声片段补等长静音轨以保持流结构一致，结果写入 `has_audio`。模型原生音轨**不含台词与时间戳**，需要逐字字幕时仍走 TTS 时间轴或对成片做 ASR。
+- **分镜脚本（`src/text/storyboard_director.py`）**：`motion_prompt` 是给图生视频模型用的连续镜头脚本，要求四段式并用分号分隔——① 承接上一镜头尾帧（人物/服装/场景/光线一致）② 主体动作顺序、速度与氛围（可写环境音，禁止台词、口型与屏幕文字）③ 方括号英文运镜指令（如 `[Push in]`、`[Static shot]`）④ 收尾画面与留给下一镜头的接续点；中文 150–400 字，硬上限 1800 字。缺失时回落到 `DEFAULT_MOTION_PROMPT`；`_PLAN_VERSION` 变更会让旧分镜计划失效并重新规划。
+- **百炼万相（`provider=wan`，默认）**：保持原有行为；`base_url/api_key/model` 留空时自动复用 `DASHSCOPE_API_KEY`、`.env`、当前 LLM/生图工作空间地址，单镜头支持 5、10、15 秒。
+- **环境变量**：`VIDEO_PROVIDER`、`VIDEO_BASE_URL`、`VIDEO_API_KEY`、`VIDEO_MODEL`、`VIDEO_RESOLUTION`、`VIDEO_DURATION`、`MINIMAX_API_KEY`、`MINIMAX_BASE_URL`、`MINIMAX_VIDEO_MODEL`、`MINIMAX_VIDEO_RESOLUTION`。
+- **核心文件**：`src/media/minimax_i2v.py`、`src/media/wan_i2v.py`；服务商选择在 `src/media/shot_video_jobs.py` 的 `video_provider()/provider_class()/duration_options()`，时长校验统一读这里。
+- **付费与安全**：只有用户显式确认才提交付费任务；下载前校验 https 且拒绝本地/私有地址；凭证失败只返回脱敏错误。
+
 ## 存储配置
 
 ### 本地存储模式（当前使用）

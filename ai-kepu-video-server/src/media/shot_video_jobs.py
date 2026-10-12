@@ -6,6 +6,7 @@ the fallback. An interrupted paid task is polled, never silently resubmitted.
 """
 import hashlib
 import json
+import logging
 import os
 import re
 import threading
@@ -13,12 +14,79 @@ import uuid
 from pathlib import Path
 
 from src.config import Config
-from src.media.wan_i2v import WanImageToVideo
+from src.media.minimax_i2v import MinimaxImageToVideo, MinimaxVideoError
+from src.media.wan_i2v import WanImageToVideo, WanVideoError
 
+
+logger = logging.getLogger(__name__)
 
 _active = set()
 _lock = threading.RLock()
 _slots = threading.BoundedSemaphore(2)
+
+
+def _video_config():
+    return Config.load_model_config().get("video") or {}
+
+
+def video_provider():
+    """Configured image-to-video provider; Wan stays the default."""
+    return "minimax" if str(_video_config().get("provider") or "").strip().lower() == "minimax" else "wan"
+
+
+def provider_class():
+    return MinimaxImageToVideo if video_provider() == "minimax" else WanImageToVideo
+
+
+def duration_options():
+    """Clip lengths the configured provider accepts right now."""
+    video = _video_config()
+    return tuple(provider_class().duration_options(video.get("resolution"), video.get("model")))
+
+
+def supports_audio():
+    """Whether the configured provider returns clips with their own audio."""
+    return bool(provider_class().supports_audio(_video_config().get("model")))
+
+
+def default_duration():
+    options = duration_options()
+    configured = _video_config().get("duration")
+    return configured if configured in options else options[0]
+
+
+def _failure_reason(exc):
+    """Keep the provider's sanitised reason instead of hiding it.
+
+    Adapters already strip credentials and raw payloads, so their message is
+    safe to show. Anything else keeps a short class name plus a stable hint.
+    """
+    if isinstance(exc, (MinimaxVideoError, WanVideoError)):
+        return str(exc).strip() or "视频生成失败，请稍后重试"
+    return (
+        "视频生成失败，请检查日志、网络或 API 额度；原任务 ID 已保留"
+        f"（{type(exc).__name__}）"
+    )
+
+
+def _has_audio_track(path):
+    """True when a generated clip carries its own audio (MiniMax-H3 does)."""
+    import shutil
+    import subprocess
+
+    ffprobe = shutil.which("ffprobe")
+    if not ffprobe or not Path(path).is_file():
+        return False
+    try:
+        result = subprocess.run(
+            [ffprobe, "-v", "error", "-select_streams", "a",
+             "-show_entries", "stream=codec_type", "-of", "csv=p=0", str(path)],
+            capture_output=True, text=True, timeout=30, encoding="utf-8",
+            errors="replace",
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0 and "audio" in result.stdout
 
 
 def _identity(image_path):
@@ -91,14 +159,16 @@ def matching_video_path(task_id, segment):
     return None
 
 
-def start(task_id, segment_index, image_path, prompt, *, duration=5, force_new=False, base=None, provider_factory=WanImageToVideo):
+def start(task_id, segment_index, image_path, prompt, *, duration=None, force_new=False, base=None, provider_factory=None):
     """Explicit user action only. Returns immediately; no paid batch dispatch."""
     image_path = str(Path(image_path).resolve())
     signature = _identity(image_path)
-    if not str(prompt).strip() or len(str(prompt)) > 1500:
-        raise ValueError("请输入不超过 1500 字的视频动作提示词")
-    if duration not in (5, 10, 15):
-        raise ValueError("生成时长应为 5、10 或 15 秒")
+    if not str(prompt).strip() or len(str(prompt)) > 1800:
+        raise ValueError("请输入不超过 1800 字的视频动作提示词")
+    duration = default_duration() if duration is None else duration
+    options = duration_options()
+    if duration not in options:
+        raise ValueError("生成时长应为 " + "、".join(str(value) for value in options) + " 秒")
     key = (str(task_id), segment_index)
     with _lock:
         if key in _active:
@@ -112,7 +182,8 @@ def start(task_id, segment_index, image_path, prompt, *, duration=5, force_new=F
         if not force_new and same_request and existing.get("status") == "completed":
             return existing
         # Constructing the adapter checks credentials before creating any job.
-        provider = provider_factory()
+        adapter_class = provider_factory or provider_class()
+        provider = adapter_class()
         reuse_id = (
             existing.get("provider_task_id") if same_request and not force_new
             and existing.get("status") in {"interrupted", "failed"} else None
@@ -136,10 +207,15 @@ def start(task_id, segment_index, image_path, prompt, *, duration=5, force_new=F
                     _write(task_id, segment_index, record, base)
                 url = provider.wait(task)
                 provider.download(url, record["video_path"])
+                record["has_audio"] = _has_audio_track(record["video_path"])
                 record["status"] = "completed"
-            except Exception:
+            except Exception as exc:
                 record["status"] = "failed"
-                record["error"] = "视频生成失败，请检查日志、网络或 API 额度；原任务 ID 已保留"
+                record["error"] = _failure_reason(exc)
+                logger.warning(
+                    "shot video %s#%s failed: %s", task_id, segment_index, exc,
+                    exc_info=True,
+                )
             finally:
                 with _lock:
                     # Do not overwrite a newer request's record.

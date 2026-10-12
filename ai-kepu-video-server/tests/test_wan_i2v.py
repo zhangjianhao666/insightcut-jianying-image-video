@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from src.media import shot_video_jobs
 from src.media.shot_video_jobs import start, status, matching_video_path, _write
 from src.media.wan_i2v import WanImageToVideo, WanVideoError
 from src.config import Config
@@ -85,6 +86,8 @@ def test_shot_checkpoint_and_stale_image(monkeypatch, tmp_path):
 
 def test_interrupted_job_reuses_original_task(monkeypatch, tmp_path):
     monkeypatch.setattr(Config, "BASE_DIR", tmp_path)
+    # Pin the Wan clip lengths instead of inheriting the local video settings.
+    monkeypatch.setattr(shot_video_jobs, "video_provider", lambda: "wan")
     image = tmp_path / "first.png"
     image.write_bytes(b"image")
     from src.media.shot_video_jobs import _identity

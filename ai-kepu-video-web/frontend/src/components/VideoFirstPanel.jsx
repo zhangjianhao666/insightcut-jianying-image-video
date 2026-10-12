@@ -15,11 +15,18 @@ const STATES = {
 
 export function VideoFirstPanel({ taskId, segments = [], ratio = '16:9', production }) {
   const [job, setJob] = useState({ status: 'not_started', total: 0, completed: 0 })
-  const [seconds, setSeconds] = useState(5)
+  const [seconds, setSeconds] = useState(null)
   const [retryPaid, setRetryPaid] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const count = segments.length
+  // Clip lengths come from the configured provider; MiniMax rejects 5s at 1080P.
+  const durationOptions = Array.isArray(job.duration_options) && job.duration_options.length
+    ? job.duration_options
+    : [5, 10, 15]
+  const activeSeconds = durationOptions.includes(seconds)
+    ? seconds
+    : (job.default_duration ?? durationOptions[0])
   const readyImages = useMemo(
     () => segments.filter(s => s.image_status === 'completed' && s.image_url).length,
     [segments],
@@ -52,8 +59,8 @@ export function VideoFirstPanel({ taskId, segments = [], ratio = '16:9', product
 
   const generate = async () => {
     const missing = Math.max(0, count - (job.completed || 0))
-    const estimate = missing * seconds
-    const notice = `准备生成动态视频：${count} 个镜头，每段 ${seconds} 秒。\n\n最多可能新调用 ${missing} 次万相图生视频，计费总秒数上限约 ${estimate} 秒（如有有效片段则复用，最终以服务商计费为准）。\n\n每段都会生成真正的 MP4；任何一段失败都不会用图片代替。最终视频没有配音。\n\n${retryPaid ? '你已勾选「允许重新提交失败任务」：可能产生额外费用。\n\n' : ''}确认开始？`
+    const estimate = missing * activeSeconds
+    const notice = `准备生成动态视频：${count} 个镜头，每段 ${activeSeconds} 秒。\n\n最多可能新调用 ${missing} 次图生视频，计费总秒数上限约 ${estimate} 秒（如有有效片段则复用，最终以服务商计费为准）。\n\n每段都会生成真正的 MP4；任何一段失败都不会用图片代替。最终视频没有配音。\n\n${retryPaid ? '你已勾选「允许重新提交失败任务」：可能产生额外费用。\n\n' : ''}确认开始？`
     if (!window.confirm(notice)) return
     setBusy(true)
     setError('')
@@ -63,7 +70,7 @@ export function VideoFirstPanel({ taskId, segments = [], ratio = '16:9', product
         method: 'post',
         data: {
           confirm_paid_generation: true,
-          duration: seconds,
+          duration: activeSeconds,
           force_new_failed: retryPaid,
         },
         timeout: 30000,
@@ -97,7 +104,7 @@ export function VideoFirstPanel({ taskId, segments = [], ratio = '16:9', product
     <header>
       <div>
         <strong>真正的 AI 视频生产</strong>
-        <small>分镜 → 首帧 → 每镜头万相图生视频 → MP4 拼接（不使用图片轮播）</small>
+        <small>分镜 → 首帧 → 每镜头图生视频 → MP4 拼接（不使用图片轮播）</small>
       </div>
       <span className={job.status === 'completed' ? 'video-first-complete' : 'video-first-status'}>
         {STATES[job.status] || job.status}
@@ -117,13 +124,13 @@ export function VideoFirstPanel({ taskId, segments = [], ratio = '16:9', product
       })[shot.status] || shot.status}</span>)}
     </div> : null}
     {url && job.status === 'completed' ? <div className="video-first-output">
-      <video src={url} controls playsInline preload="metadata" aria-label="万相动态镜头拼接成片" />
+      <video src={url} controls playsInline preload="metadata" aria-label="AI 动态镜头拼接成片" />
       <a href={url} download="video_first.mp4">下载真正的动态视频 MP4</a>
     </div> : null}
     {error || job.error ? <p role="alert">{error || job.error}</p> : null}
     <div className="video-first-actions">
-      <label>单镜头时长 <select value={seconds} onChange={event => setSeconds(Number(event.target.value))} disabled={running}>
-        <option value={5}>5 秒</option><option value={10}>10 秒</option><option value={15}>15 秒</option>
+      <label>单镜头时长 <select value={activeSeconds} onChange={event => setSeconds(Number(event.target.value))} disabled={running}>
+        {durationOptions.map(value => <option value={value} key={value}>{value} 秒</option>)}
       </select></label>
       {job.status === 'failed' ? <label className="video-first-retry">
         <input type="checkbox" checked={retryPaid} onChange={event => setRetryPaid(event.target.checked)} />
