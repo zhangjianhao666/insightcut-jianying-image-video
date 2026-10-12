@@ -19,6 +19,8 @@ export function VideoFirstPanel({ taskId, segments = [], ratio = '16:9', product
   const [retryPaid, setRetryPaid] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [review, setReview] = useState(null)
+  const [audioMode, setAudioMode] = useState(null)
   const count = segments.length
   // Clip lengths come from the configured provider; MiniMax rejects 5s at 1080P.
   const durationOptions = Array.isArray(job.duration_options) && job.duration_options.length
@@ -27,6 +29,7 @@ export function VideoFirstPanel({ taskId, segments = [], ratio = '16:9', product
   const activeSeconds = durationOptions.includes(seconds)
     ? seconds
     : (job.default_duration ?? durationOptions[0])
+  const activeAudioMode = audioMode || job.audio_mode || 'native'
   const readyImages = useMemo(
     () => segments.filter(s => s.image_status === 'completed' && s.image_url).length,
     [segments],
@@ -52,15 +55,28 @@ export function VideoFirstPanel({ taskId, segments = [], ratio = '16:9', product
         if (live) setError('AI 动态视频任务状态暂时无法查询')
       }
     }
+    const refreshContinuity = async () => {
+      try {
+        const data = await request({
+          url: `${ROOT}/tasks/${encodeURIComponent(taskId)}/continuity`,
+          method: 'get', suppressToast: true,
+        })
+        if (live) setReview(data)
+      } catch {
+        if (live) setReview(null)
+      }
+    }
     void refresh()
+    void refreshContinuity()
     const interval = window.setInterval(refresh, 4000)
-    return () => { live = false; window.clearInterval(interval) }
+    const reviewInterval = window.setInterval(refreshContinuity, 12000)
+    return () => { live = false; window.clearInterval(interval); window.clearInterval(reviewInterval) }
   }, [taskId])
 
   const generate = async () => {
     const missing = Math.max(0, count - (job.completed || 0))
     const estimate = missing * activeSeconds
-    const notice = `准备生成动态视频：${count} 个镜头，每段 ${activeSeconds} 秒。\n\n最多可能新调用 ${missing} 次图生视频，计费总秒数上限约 ${estimate} 秒（如有有效片段则复用，最终以服务商计费为准）。\n\n每段都会生成真正的 MP4；任何一段失败都不会用图片代替。最终视频没有配音。\n\n${retryPaid ? '你已勾选「允许重新提交失败任务」：可能产生额外费用。\n\n' : ''}确认开始？`
+    const notice = `准备生成动态视频：${count} 个镜头，每段 ${activeSeconds} 秒。\n\n最多可能新调用 ${missing} 次图生视频，计费总秒数上限约 ${estimate} 秒（如有有效片段则复用，最终以服务商计费为准）。\n\n每段都会生成真正的 MP4；任何一段失败都不会用图片代替。音频策略：${activeAudioMode === 'mute' ? '移除模型原生音轨，后期统一配音' : '保留模型原生音效（不能保证跨镜头同一人声）'}。\n\n${retryPaid ? '你已勾选「允许重新提交失败任务」：可能产生额外费用。\n\n' : ''}确认开始？`
     if (!window.confirm(notice)) return
     setBusy(true)
     setError('')
@@ -72,6 +88,7 @@ export function VideoFirstPanel({ taskId, segments = [], ratio = '16:9', product
           confirm_paid_generation: true,
           duration: activeSeconds,
           force_new_failed: retryPaid,
+          audio_mode: activeAudioMode,
         },
         timeout: 30000,
       })
@@ -114,7 +131,7 @@ export function VideoFirstPanel({ taskId, segments = [], ratio = '16:9', product
       <span>首帧图片：{readyImages}/{count || 0}</span>
       <span>动态镜头：{job.completed || 0}/{job.total || count || 0}</span>
       <span>画幅：{ratio}</span>
-      <span>音轨：无旁白</span>
+      <span>音轨：{job.audio_mode === 'mute' ? '模型原生音轨已移除' : job.has_audio ? '模型原生音效（未锁定人声）' : '无原生音频'}</span>
     </div>
     {running ? <progress value={job.completed || 0} max={Math.max(job.total || count, 1)} aria-label="AI 动态镜头进度" /> : null}
     {job.shots?.length ? <div className="video-first-shot-status">
@@ -128,7 +145,30 @@ export function VideoFirstPanel({ taskId, segments = [], ratio = '16:9', product
       <a href={url} download="video_first.mp4">下载真正的动态视频 MP4</a>
     </div> : null}
     {error || job.error ? <p role="alert">{error || job.error}</p> : null}
+    {review ? <details className="video-first-continuity">
+      <summary>一致性导演 · {review.shots?.length || 0} 个镜头 · {review.warnings?.length || 0} 项待复核</summary>
+      <p>IP：{review.ip?.name || '未绑定'}{review.ip?.version ? ` · v${review.ip.version}` : ''}。
+        同一场景连续动作才使用 continue；全景切特写、反打等正常采用 cut。</p>
+      {review.status === 'unplanned' ? <p>目前没有新版分镜规划，重新生成预案后才能检查镜头接续。</p> : null}
+      {review.warnings?.length ? <ul>
+        {review.warnings.map((warning, n) => <li key={`${warning.index}-${warning.code}-${n}`}>
+          {warning.index === null ? '全片' : `镜头 ${warning.index + 1}`}：{warning.message}
+        </li>)}
+      </ul> : null}
+      {review.shots?.map(shot => <div className="video-first-continuity-shot" key={shot.index}>
+        <strong>镜头 {shot.index + 1} · {shot.scene_id} · {shot.transition_to_next}</strong>
+        <p>机位：{shot.camera || '未设置'}；开场：{shot.start_state || '待补充'}</p>
+        <p>收尾：{shot.end_state || '待补充'}；角色：{shot.character_ids?.join('、') || '未标识'}</p>
+      </div>)}
+      <small>这仍是基于规划状态和参考提示词的连续性控制，并非已实现模型原生尾帧续写；关键切镜需要人工审核。</small>
+      <p>{review.audio_note}</p>
+    </details> : null}
     <div className="video-first-actions">
+      <label>音频策略 <select value={activeAudioMode} disabled={running}
+        onChange={event => setAudioMode(event.target.value)}>
+        <option value="native">保留模型原生环境声</option>
+        <option value="mute">移除原生声音，后期统一配音</option>
+      </select></label>
       <label>单镜头时长 <select value={activeSeconds} onChange={event => setSeconds(Number(event.target.value))} disabled={running}>
         {durationOptions.map(value => <option value={value} key={value}>{value} 秒</option>)}
       </select></label>
