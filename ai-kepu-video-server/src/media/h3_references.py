@@ -35,7 +35,8 @@ class H3ReferenceError(ValueError):
 def _project_dir(task_id):
     if not _ID.fullmatch(str(task_id)):
         raise H3ReferenceError("非法项目 ID")
-    return Config.BASE_DIR / "data" / "media" / "_h3_references" / str(task_id)
+    # Keep reference voice/character assets OUTSIDE the public /media route.
+    return Config.BASE_DIR / "data" / "_private" / "h3_references" / str(task_id)
 
 
 def _config_path(task_id):
@@ -134,10 +135,10 @@ def save_scene_image(task_id, scene_id, data):
         with Image.open(io.BytesIO(data)) as im:
             if im.format not in {"JPEG", "PNG", "WEBP"}:
                 raise H3ReferenceError("场景参考仅支持 JPEG、PNG、WebP")
-            im.load()
             w, h = im.size
             if not (256 <= w <= 5760 and 256 <= h <= 5760 and 0.4 <= w / h <= 2.5):
                 raise H3ReferenceError("H3 场景参考图边长需为 256–5760 像素，宽高比 0.4–2.5")
+            im.load()
             output = io.BytesIO()
             # Keep uploaded references small enough for data-URI requests.
             im.convert("RGB").save(output, "JPEG", quality=86, optimize=True)
@@ -171,6 +172,10 @@ def save_voice_sample(task_id, data):
             seconds = handle.getnframes() / handle.getframerate()
             if not (2 <= seconds <= 15):
                 raise H3ReferenceError("声音样本时长须为 2–15 秒")
+            if len(handle.readframes(handle.getnframes())) != (
+                handle.getnframes() * handle.getnchannels() * handle.getsampwidth()
+            ):
+                raise H3ReferenceError("WAV 音频内容不完整")
     except (wave.Error, EOFError, OSError):
         raise H3ReferenceError("无效的 PCM WAV 音频") from None
     with _LOCK:
