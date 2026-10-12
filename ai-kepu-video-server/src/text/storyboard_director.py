@@ -27,30 +27,11 @@ DEFAULT_MOTION_PROMPT = (
 )
 
 
-def enforce_visual_consistency(prompt: str, bible: dict) -> str:
-    """Embed immutable art direction into every actual text-to-image request.
-
-    A shared bible stored separately cannot affect the image model unless it
-    is included in the prompt sent to that model.
-    """
-    if not isinstance(bible, dict) or not any(bible.values()):
+def enforce_visual_consistency(prompt: str, bible: dict, shot=None) -> str:
+    from src.text.image_contract import compile_shot
+    if not bible and not shot:
         return str(prompt or "").strip()
-    locks = [
-        ("Recurring character identity and clothing", "character_lock"),
-        ("Recurring environment and props", "environment_lock"),
-        ("Art direction and color palette", "art_direction"),
-        ("Avoid", "negative_rules"),
-    ]
-    minimax = Config.image_config().get("provider") == "minimax"
-    lock_limit = 120 if minimax else 250
-    details = [
-        f"{label}: {str(bible[key])[:lock_limit]}"
-        for label, key in locks if bible.get(key)
-    ]
-    full = str(prompt or "").strip()[:3000]
-    if details:
-        full += ". PROJECT-WIDE VISUAL CONTINUITY: " + "; ".join(details)
-    return full[:4400]
+    return compile_shot(prompt, bible, shot=shot)["prompt"]
 
 
 def _location(task_id):
@@ -90,7 +71,9 @@ def _normalize_plan(raw, count):
         bible = {}
     allowed_bible = ("character_lock", "environment_lock", "art_direction",
                      "camera_language", "negative_rules")
-    clean_bible = {key: str(bible.get(key) or "")[:350] for key in allowed_bible}
+    clean_bible = {key: bible.get(key) or "" for key in allowed_bible}
+    if any(len(json.dumps(value, ensure_ascii=False)) > 5000 for value in clean_bible.values()):
+        raise ValueError("完整视觉约束过长，请导演精简，不得截断")
     shots = {}
     for shot in raw.get("shots") or []:
         if not isinstance(shot, dict):
@@ -101,8 +84,10 @@ def _normalize_plan(raw, count):
             continue
         if not 0 <= index < count:
             continue
-        image_prompt = str(shot.get("image_prompt") or "").strip()[:1800]
+        image_prompt = str(shot.get("image_prompt") or "").strip()
         motion_prompt = str(shot.get("motion_prompt") or "").strip()[:1800]
+        if len(image_prompt) > 1800:
+            raise ValueError("图片描述过长，请导演精简，禁止截断")
         if len(image_prompt) < 10:
             continue
         shots[str(index)] = {
@@ -110,6 +95,7 @@ def _normalize_plan(raw, count):
             "motion_prompt": motion_prompt or DEFAULT_MOTION_PROMPT,
             **({"duration": shot["duration"]} if type(shot.get("duration")) is int and 4 <= shot["duration"] <= 15 else {}),
             "purpose": str(shot.get("purpose") or "")[:400],
+            "visual_contract": shot.get("visual_contract") or {},
             "shot_type": str(shot.get("shot_type") or "scene")[:50],
             **normalize_shot(shot, index),
         }
@@ -210,6 +196,10 @@ def plan_storyboard(task_id, generator, *, script, segments, summary, style, rat
         "camera(景别/机位/轴线)、start_state(该镜头开场角色位置/手部/视线/道具状态)、"
         "end_state(镜头结束状态)、transition_to_next(cut/match_cut/continue 之一)、"
         "shot_type(scene/portrait/diagram/transition)、"
+        "visual_contract(subject_mode:character/hands/object/diagram, framing:wide/medium/close_up/extreme_close_up/top_down, text_policy:forbidden)。"
+        "纯食材特写使用object，不要无条件把主持人塞进每个画面；仅出现手时用hands，图解用diagram。"
+        "画面描述必须具体可画，抽象营养概念不得直接变成含文字标签的伪科学图。"
+        "每项只描述一个可独立生成的连续画面；禁止在单镜内拼图、分屏或多个并列画面，多个做法分到不同镜头。"
         "image_prompt(英文35-60词：主体/景别/机位/光线/角色标识)、"
         "motion_prompt(中文150-400字：主角动作与运镜、光影和环境，不含口播台词)。"
         "motion_prompt 分四段用分号隔开：① 开场状态与视觉约束；② 动作顺序与速度；"

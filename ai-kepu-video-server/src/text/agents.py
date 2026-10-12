@@ -130,30 +130,48 @@ class ImagePromptAgent:
         self, segment_text: str, summary: str, style: str,
         aspect_ratio: str = None, visual_bible: dict = None,
         previous_segment: str = "", next_segment: str = "",
+        shot_direction: dict = None, feedback: str = "",
     ) -> str:
         """Use full-video art direction and narrative neighbors as context."""
-        bible_text = json.dumps(visual_bible or {}, ensure_ascii=False)[:1100]
+        if not isinstance(feedback, str) or len(feedback) > 2000:
+            raise ValueError("纠错要求必须是最多 2000 字的文本")
+        if shot_direction:
+            from src.text.image_contract import compile_shot
+            bible_text = compile_shot(
+                shot_direction.get("image_prompt") or segment_text,
+                visual_bible or {}, shot=shot_direction,
+            )["prompt"]
+        else:
+            bible_text = json.dumps(visual_bible or {}, ensure_ascii=False)
+        direction_text = json.dumps(shot_direction or {}, ensure_ascii=False)
         user_prompt = f"""You are the cinematographer of one continuous educational video.
 Create one English image-generation prompt for the CURRENT narration shot.
 
 Full video summary (story context, not all to be drawn):
 {summary[:550]}
 
-Shared visual bible (MUST preserve identities, costumes, colors, sets):
+Effective visual constraints for this shot (MUST preserve complete rules):
 {bible_text}
+
+Approved director shot (subject, shot size and text policy are authoritative):
+{direction_text}
+User correction (apply within the director subject/framing and no-text policy):
+{feedback}
 
 Previous narration: {previous_segment[:160]}
 CURRENT narration: {segment_text[:300]}
 Next narration: {next_segment[:160]}
 
-Visual style: {style[:250]}
+Visual style: {style}
 Aspect ratio: {aspect_ratio or "16:9"}
 
 Requirements:
 - Describe actual visible subjects, environment, shot size, composition and lighting.
 - Use 35-75 English words, one coherent shot, no explanatory commentary.
-- Use the SAME recurring character descriptions and costume across scenes.
-- Keep the shot distinct from adjacent shots; vary wide/medium/close framing.
+- Keep recurring identities and costumes only when a character is required in this shot.
+- Preserve the director subject and framing; never add a presenter or full body to an object/hands close-up.
+- Corrections cannot override the director subject, shot size or prohibition of readable text.
+- Keep the shot distinct without changing approved framing; choose appropriate framing only when no director shot is supplied.
 - No overlay text, typography, captions, logos, watermarks or pseudo-writing.
 - Maintain continuity with previous and following shots.
 Return only the English visual prompt."""
@@ -169,12 +187,9 @@ Return only the English visual prompt."""
     def _clean_prompt(self, text: str) -> str:
         prompt = (text or "").strip()
         prompt = re.sub(r"^```(?:text)?\s*|\s*```$", "", prompt, flags=re.S).strip()
-        prompt = prompt.splitlines()[0].strip() if "\n" in prompt else prompt
+        prompt = " ".join(prompt.splitlines()).strip()
         prompt = re.sub(r"^\s*[-*\d.)]+\s*", "", prompt).strip()
         prompt = prompt.strip("\"'“”‘’")
-        words = prompt.split()
-        if len(words) > 85:
-            prompt = " ".join(words[:85])
         if not prompt:
             raise ValueError("图片提示词模型返回空内容，需重新生成")
         return prompt

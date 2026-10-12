@@ -257,3 +257,11 @@ def for_shot(task_id, shot_frame, scene_id):
 def fingerprint_now(task_id, shot_frame, scene_id):
     item = for_shot(task_id, shot_frame, scene_id)
     return item["fingerprint"] if item else "first_frame"
+
+
+def scene_image(task_id, scene_id):
+    """Reuse an explicitly selected scene anchor for image or video generation."""
+    if not scene_id:
+        return None
+    identity = _scene(scene_id)
+    return _asset(task_id, (_read(task_id).get("scenes") or {}).get(identity))

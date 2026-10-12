@@ -3781,6 +3781,10 @@ async def regenerate_segment_prompt(
     payload: dict = Body(...),
 ):
     """Regenerate one image prompt without invoking image or TTS generation."""
+    feedback = (payload or {}).get("feedback", "")
+    if not isinstance(feedback, str) or len(feedback) > 2000:
+        raise HTTPException(status_code=422, detail="纠错要求必须是最多 2000 字的文本")
+    feedback = feedback.strip()
     task_row = mysql_client.get_task(task_id)
     if not task_row:
         raise HTTPException(status_code=404, detail="任务不存在")
@@ -3805,6 +3809,7 @@ async def regenerate_segment_prompt(
             },
         )
     target = {
+        "feedback": feedback,
         "segment_index": int(segment_index),
         "asset_type": "prompt",
         "mode": "regenerate",
@@ -3822,6 +3827,7 @@ async def regenerate_segment_prompt(
         if (
             active.get("kind") == "regenerate_prompt"
             and active.get("snapshot_key") == snapshot_key
+            and (active_target.get("feedback") or "") == feedback
             and active_target.get("asset_type") == "prompt"
             and int(active_target.get("segment_index", -1)) == int(segment_index)
         ):
@@ -3840,6 +3846,7 @@ async def regenerate_segment_prompt(
     idempotency_key = _operation_idempotency_key(
         "regenerate_prompt", task_row, snapshot_key, [target]
     )
+    idempotency_key += ":" + hashlib.sha256(feedback.encode("utf-8")).hexdigest()
     created = mysql_client.create_task_operation(
         task_id,
         "regenerate_prompt",

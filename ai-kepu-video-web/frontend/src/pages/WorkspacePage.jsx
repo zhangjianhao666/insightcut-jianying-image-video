@@ -49,6 +49,7 @@ import { WorkspaceSettingsOverlay } from '../components/WorkspaceSettingsOverlay
 import { WorkspaceStoryboardNav } from '../components/WorkspaceStoryboardNav'
 import { WorkspaceStageNavigator } from '../components/WorkspaceStageNavigator'
 import { nativeVideoPresentation } from './nativeVideoState'
+import { ImageReviewPanel } from '../components/ImageReviewPanel'
 import { VideoFirstPanel } from '../components/VideoFirstPanel'
 import { BrandLoader } from '../components/ui/BrandLoader'
 import { Lightbox } from '../components/ui/Lightbox'
@@ -876,12 +877,12 @@ export function WorkspacePage() {
     }
   }
 
-  const regeneratePrompt = async segment => {
+  const regeneratePrompt = async (segment, feedback) => {
     if (!await flushEdits()) return
     const actionKey = `prompt:${segment.segment_index}`
     setBusyAction(actionKey)
     try {
-      await regenerateSegmentPrompt(taskId, segment.segment_index, { snapshot_key: workspaceRef.current?.snapshot_key })
+      await regenerateSegmentPrompt(taskId, segment.segment_index, { snapshot_key: workspaceRef.current?.snapshot_key, ...(feedback ? { feedback } : {}) })
       toast.success(`已开始重新生成第 ${segment.segment_index + 1} 段提示词`)
       workspacePolling.refresh()
     } catch (error) {
@@ -1293,6 +1294,14 @@ export function WorkspacePage() {
             </button>)}
           </div>
         </section>
+        {currentSegment?.image_path || currentSegment?.image_url ? <ImageReviewPanel
+          key={`${taskId}:${currentSegment.segment_index}:${currentSegment.image_path || currentSegment.image_url}`}
+          taskId={taskId}
+          segmentIndex={currentSegment.segment_index}
+          imageIdentity={currentSegment.image_path || currentSegment.image_url}
+          disabled={!editable || Boolean(busyAction)}
+          onCorrectPrompt={feedback => regeneratePrompt(currentSegment, feedback)}
+        /> : null}
         <VideoFirstPanel key={taskId} taskId={taskId} segments={segments} ratio={workspace.ratio} production={workspace.production} onStatusChange={onNativeVideoStatus} />
       </aside>
 

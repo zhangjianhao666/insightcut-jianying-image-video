@@ -113,7 +113,7 @@ class WanImageGenerator:
             raise WanImageError("IP 参考图损坏") from None
         return "data:image/jpeg;base64," + base64.b64encode(memory.getvalue()).decode("ascii")
 
-    def submit(self, prompt: str, size: str, reference_image=None) -> str:
+    def submit(self, prompt: str, size: str, reference_image=None, scene_reference=None) -> str:
         if not prompt.strip() or len(prompt) > 5000:
             raise WanImageError("文生图提示词应为 1–5000 个字符")
         content = [{"text": prompt}]
@@ -124,8 +124,14 @@ class WanImageGenerator:
                 "以输入参考图中的同一角色为固定系列IP：锁定脸型、毛色、"
                 "服饰、人物比例与主要视觉特征。改变场景和动作，但不要改变IP身份。"
                 + prompt
-            )[:5000]
+            )
             content.append({"image": self._reference_data_url(reference_image)})
+        if scene_reference:
+            content[0]["text"] += "\n额外场景参考只用于建筑布局、道具和色彩，不复制其中的人物；严格执行当前镜头景别。"
+            content.append({"image": self._reference_data_url(scene_reference)})
+        if len(content[0]["text"]) > 5000:
+            raise WanImageError("完整提示词超过万相上限，请由导演精简，不得截断")
+        self.submitted_prompt = content[0]["text"]
         payload = {
             "model": self.model,
             "input": {"messages": [{"role": "user", "content": content}]},
@@ -201,8 +207,8 @@ class WanImageGenerator:
         finally:
             temporary.unlink(missing_ok=True)
 
-    def generate(self, prompt: str, size: str, output_path: str, reference_image=None) -> str:
-        url = self.submit(prompt, size, reference_image=reference_image)
+    def generate(self, prompt: str, size: str, output_path: str, reference_image=None, scene_reference=None) -> str:
+        url = self.submit(prompt, size, reference_image=reference_image, scene_reference=scene_reference)
         receipt_path = Path(output_path).with_suffix(".receipt.json")
         receipt_path.parent.mkdir(parents=True, exist_ok=True)
         receipt_path.write_text(json.dumps(self.receipt, ensure_ascii=False), encoding="utf-8")

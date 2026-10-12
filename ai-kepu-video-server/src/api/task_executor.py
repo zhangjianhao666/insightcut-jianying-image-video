@@ -115,13 +115,16 @@ def _asset_snapshot_json(
 
 def _accepted_image_prompt(path: Any, fallback: str) -> str:
     """Use the exact provider-accepted prompt when the adapter supplied it."""
+    if not bool(getattr(path, "fallback_used", False)) and getattr(path, "director_prompt", None):
+        return str(path.director_prompt)
     value = getattr(path, "submitted_prompt", None)
     return str(value or fallback or "")
 
 
 def _image_generation_metadata(path: Any) -> Optional[str]:
+    metadata = getattr(path, "generation_metadata", {})
     if not bool(getattr(path, "fallback_used", False)):
-        return None
+        return json.dumps({**metadata, "submitted_prompt": str(getattr(path, "submitted_prompt", "") or "")}, ensure_ascii=False, sort_keys=True) if metadata else None
     return json.dumps(
         {
             "content_policy_fallback": True,
@@ -280,6 +283,8 @@ def _attach_ip_reference(task_id: str, pipeline) -> None:
     from src.text.ip_library import project_ip
     profile = project_ip(task_id)
     image_generator = getattr(pipeline, "image_generator", None)
+    if image_generator:
+        image_generator.project_task_id = task_id
     if image_generator and profile and profile.get("reference_image"):
         image_generator.reference_image = profile["reference_image"]
 
@@ -862,6 +867,10 @@ class TaskExecutor:
             )[:500]
             from src.text.storyboard_director import load_plan
             visual_plan = load_plan(task_id) or {}
+            direction = (visual_plan.get("shots") or {}).get(str(index)) or {}
+            planned_segments = visual_plan.get("segments") or []
+            if index >= len(planned_segments) or planned_segments[index] != (segment.get("text") or ""):
+                direction = {}
             segment_position = next(
                 (i for i, row in enumerate(segments)
                  if int(row.get("segment_index")) == index), 0
@@ -871,6 +880,8 @@ class TaskExecutor:
                 summary=summary,
                 style=visual_style_suffix or visual_style,
                 aspect_ratio=ratio,
+                **({"shot_direction": direction} if direction else {}),
+                **({"feedback": target.get("feedback")} if target.get("feedback") else {}),
                 **({
                     "visual_bible": visual_plan.get("visual_bible"),
                     "previous_segment": segments[segment_position - 1].get("text", "") if segment_position else "",
@@ -881,7 +892,8 @@ class TaskExecutor:
                 cancellation.raise_if_cancelled()
             from src.text.storyboard_director import enforce_visual_consistency
             prompt = enforce_visual_consistency(
-                str(prompt or "").strip(), visual_plan.get("visual_bible") or {}
+                str(prompt or "").strip(), visual_plan.get("visual_bible") or {},
+                shot=direction or None
             )
             if not prompt:
                 raise RuntimeError("提示词生成结果为空")
@@ -912,6 +924,19 @@ class TaskExecutor:
                 )
             if next_version is None:
                 raise RecoverableTaskError("提示词保存失败")
+
+            if direction:
+                # The task runtime lock excludes other plan writers. Publish the
+                # corrected prompt only after the versioned database save wins.
+                from src.text.storyboard_director import _write
+                current_plan = load_plan(task_id) or {}
+                if current_plan != visual_plan:
+                    raise RecoverableTaskError(
+                        "导演规划已发生变化，请刷新后重试",
+                        make_safe_error(ErrorCode.CONFLICT),
+                    )
+                current_plan["shots"][str(index)]["image_prompt"] = prompt
+                _write(task_id, current_plan)
 
             refreshed = db_client.get_segments(task_id)
             all_prompts_ready = bool(refreshed) and all(
@@ -2012,7 +2037,7 @@ class TaskExecutor:
                             next_segment=pipeline.segments[i + 1] if i + 1 < segments_count else "",
                         )
                     from src.text.storyboard_director import enforce_visual_consistency
-                    prompt = enforce_visual_consistency(prompt, visual_bible)
+                    prompt = enforce_visual_consistency(prompt, visual_bible, shot=planned)
                     return {"status": "success", "prompt": prompt, "error": None}
                 except TaskCancelled:
                     raise
