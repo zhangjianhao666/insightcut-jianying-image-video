@@ -60,7 +60,8 @@ class MinimaxImageToVideo:
     DEFAULT_MODEL = "MiniMax-Hailuo-2.3"
     DEFAULT_RESOLUTION = "1080P"
     DEFAULT_DURATION = 6
-    H3_RESOLUTIONS = ("480P", "768P", "2K")
+    H3_RESOLUTIONS = ("768P", "2K")
+    H3_MAX_RESOLUTIONS = ("480P", "768P")
     H3_DEFAULT_RESOLUTION = "768P"
     H3_DEFAULT_DURATION = 6
     H3_DURATIONS = tuple(range(4, 16))
@@ -129,6 +130,8 @@ class MinimaxImageToVideo:
 
     @classmethod
     def resolution_options(cls, model=None):
+        if str(model or cls.DEFAULT_MODEL).strip() == "MiniMax-H3-Max":
+            return cls.H3_MAX_RESOLUTIONS
         if is_h3_model(model or cls.DEFAULT_MODEL):
             return cls.H3_RESOLUTIONS
         return ("768P", "1080P")
@@ -141,6 +144,8 @@ class MinimaxImageToVideo:
 
     @classmethod
     def duration_options(cls, resolution=None, model=None):
+        if str(model or cls.DEFAULT_MODEL).strip() == "MiniMax-H3-Max":
+            return tuple(range(5, 16))
         if is_h3_model(model or cls.DEFAULT_MODEL):
             return cls.H3_DURATIONS
         value = str(resolution or cls.DEFAULT_RESOLUTION).strip().upper()
@@ -217,7 +222,57 @@ class MinimaxImageToVideo:
             raise MinimaxVideoError("海螺只支持 JPG、PNG、WEBP 格式首帧")
         return f"data:{mime};base64,{base64.b64encode(path.read_bytes()).decode('ascii')}"
 
-    def _payload(self, image_path, text, duration):
+    @staticmethod
+    def _audio_data_url(path):
+        sample = Path(path)
+        if not sample.is_file() or sample.suffix.lower() != ".wav":
+            raise MinimaxVideoError("H3 声音参考必须是本地 WAV 文件")
+        if sample.stat().st_size > 8 * 1024 * 1024:
+            raise MinimaxVideoError("声音参考不得超过 8 MB")
+        return "data:audio/wav;base64," + base64.b64encode(sample.read_bytes()).decode("ascii")
+
+    def _payload(self, image_path, text, duration, reference_assets=None):
+        if reference_assets is not None:
+            if not is_h3_model(self.model):
+                raise MinimaxVideoError("只有 MiniMax-H3 系列支持多模态参考生成")
+            if reference_assets.get("mode") != "reference":
+                raise MinimaxVideoError("参考模式配置错误")
+            images = reference_assets.get("images") or []
+            audio = reference_assets.get("audio")
+            if not images or len(images) > 9:
+                raise MinimaxVideoError("H3 参考模式须提供 1–9 张参考图片")
+            content = [{"type": "text", "text": (
+                "Reference Image 1 is this shot's intended composition, NOT an exact first frame. "
+                "Keep the character and setting consistent with other reference images; "
+                "if Audio 1 exists, use its vocal timbre while following the script. "
+                + text
+            )[:7000]}]
+            for image in images:
+                content.append({
+                    "type": "image_url",
+                    "image_url": {"url": self._data_url(image)},
+                    "role": "reference_image",
+                })
+            if audio:
+                content.append({
+                    "type": "audio_url",
+                    "audio_url": {"url": self._audio_data_url(audio)},
+                    "role": "reference_audio",
+                })
+            payload = {
+                "model": self.model,
+                "content": content,
+                "duration": int(duration),
+                "resolution": self.resolution,
+                "ratio": self._ratio_for_image(image_path),
+            }
+            # API body limit is 64 MB. Minimize memory pressure and fail
+            # BEFORE the paid task is created, never silently drop a reference.
+            import json
+            if len(json.dumps(payload, ensure_ascii=False).encode("utf-8")) > 64 * 1024 * 1024:
+                raise MinimaxVideoError("H3 参考素材请求体超过 64 MB，请缩小图片或音频")
+            return "/v2/video_generation", payload
+
         frame = self._data_url(image_path)
         if is_h3_model(self.model):
             # H3 takes a multimodal content array and needs an explicit ratio.
@@ -225,7 +280,7 @@ class MinimaxImageToVideo:
                 "model": self.model,
                 "content": [
                     {"type": "text", "text": text},
-                    {"type": "image_url", "image_url": {"url": frame}},
+                    {"type": "image_url", "image_url": {"url": frame}, "role": "first_frame"},
                 ],
                 "duration": int(duration),
                 "resolution": self.resolution,
@@ -240,7 +295,7 @@ class MinimaxImageToVideo:
             "prompt_optimizer": True,
         }
 
-    def submit(self, image_path, prompt, duration=None):
+    def submit(self, image_path, prompt, duration=None, reference_assets=None):
         text = str(prompt or "").strip()
         if not text:
             raise MinimaxVideoError("视频动作提示词不能为空")
@@ -253,7 +308,7 @@ class MinimaxImageToVideo:
                 f"海螺 {self.model} 在 {self.resolution} 下只支持 "
                 + "、".join(f"{value} 秒" for value in options)
             )
-        path, payload = self._payload(image_path, text, duration)
+        path, payload = self._payload(image_path, text, duration, reference_assets=reference_assets)
         try:
             # H3 reports failures as HTTP 4xx with an error object, while the
             # v1 protocol answers 200 with base_resp.status_code.
