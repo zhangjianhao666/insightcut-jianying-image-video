@@ -248,3 +248,42 @@ def test_h3_surfaces_http_error_payload(tmp_path):
     message = str(error.value)
     assert "参数" in message
     assert "2K" in message
+
+
+class FakeH3Session(FakeSession):
+    """V2 task states and inline URL; any legacy query is a test failure."""
+
+    def __init__(self, states):
+        super().__init__()
+        self.states = iter(states)
+
+    def get(self, url, **kwargs):
+        assert url == "https://api.minimax.cn/v2/query/video_generation/task-123"
+        self.fetched.append((url, kwargs))
+        state = next(self.states)
+        return FakeResponse({"task": state})
+
+
+def test_h3_wait_uses_v2_query_and_inline_video_url():
+    session = FakeH3Session([
+        {"status": "queued"}, {"status": "running"},
+        {"status": "succeeded", "content": {"url": "https://cdn.example.com/h3.mp4"}},
+    ])
+    client = MinimaxImageToVideo(api_key="key", session=session, model="MiniMax-H3")
+    assert client.wait("task-123", interval=0) == "https://cdn.example.com/h3.mp4"
+    assert len(session.fetched) == 3
+    assert all("/v1/" not in url for url, _ in session.fetched)
+
+
+@pytest.mark.parametrize("payload", [
+    {"status": "failed"},
+    {"status": "cancelled"},
+    {"status": "succeeded", "content": {}},
+    {"status": "succeeded", "content": {"url": "http://127.0.0.1/secret"}},
+    {"status": "mysterious"},
+])
+def test_h3_wait_rejects_bad_status_and_unsafe_url(payload):
+    session = FakeH3Session([payload])
+    client = MinimaxImageToVideo(api_key="key", session=session, model="MiniMax-H3-Max")
+    with pytest.raises(MinimaxVideoError):
+        client.wait("task-123", interval=0)
