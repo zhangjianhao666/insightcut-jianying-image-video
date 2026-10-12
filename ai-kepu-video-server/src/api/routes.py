@@ -3272,6 +3272,13 @@ def _workspace_segment_payload(
     payload = {
         "motion_prompt": direction.get("motion_prompt") or "",
         "shot_type": direction.get("shot_type") or "",
+        "scene_id": direction.get("scene_id") or "",
+        "character_ids": direction.get("character_ids") or [],
+        "location_id": direction.get("location_id") or "",
+        "camera": direction.get("camera") or "",
+        "start_state": direction.get("start_state") or "",
+        "end_state": direction.get("end_state") or "",
+        "transition_to_next": direction.get("transition_to_next") or "cut",
         "video_status": video_state.get("status", "not_generated"),
         "id": segment.get("id"),
         "task_id": segment.get("task_id"),
