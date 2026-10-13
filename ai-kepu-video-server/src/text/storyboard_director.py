@@ -80,6 +80,16 @@ def _json_object(raw):
     return result
 
 
+def _standardize_motion_prompt(raw):
+    """Accept the four explicit numbered sections without rewriting actions."""
+    text = str(raw or "").strip()
+    if text.startswith("①") and re.findall("[①②③④]", text) == list("①②③④"):
+        sections = [part.strip().rstrip(";；").rstrip()
+                    for part in re.split(r"(?=[①②③④])", text) if part.strip()]
+        return "；".join(sections)
+    return text
+
+
 def _normalize_plan(raw, count):
     bible = raw.get("visual_bible") or {}
     if not isinstance(bible, dict):
@@ -100,7 +110,7 @@ def _normalize_plan(raw, count):
         if not 0 <= index < count:
             continue
         image_prompt = str(shot.get("image_prompt") or "").strip()
-        motion_prompt = str(shot.get("motion_prompt") or "").strip()[:1800]
+        motion_prompt = _standardize_motion_prompt(shot.get("motion_prompt"))[:1800]
         if len(image_prompt) > 1800:
             raise ValueError("图片描述过长，请导演精简，禁止截断")
         if len(image_prompt) < 10:
@@ -300,10 +310,14 @@ def plan_storyboard(task_id, generator, *, script, segments, summary, style, rat
         if compact:
             validation_category = "invalid_shot_structure"
             for shot in source.get("shots") or []:
-                motion = str(shot.get("motion_prompt") or "").strip()
+                motion = _standardize_motion_prompt(shot.get("motion_prompt"))
                 parts = re.split("[;；]", motion)
+                numbered = re.findall("[①②③④]", motion)
                 if (not 150 <= len(motion) <= 1800
-                        or len(parts) < 4 or not re.search(r"\[[A-Za-z][^\]]*\]", motion)
+                        or len(parts) < 4
+                        or any(not re.sub("^[①②③④]", "", part.strip()).strip() for part in parts)
+                        or (numbered and numbered != list("①②③④"))
+                        or not re.search(r"\[[A-Za-z][^\]]*\]", motion)
                         or any(not shot.get(key) for key in ("camera", "start_state", "end_state"))):
                     raise ValueError("invalid_shot_structure")
     except Exception as failure:

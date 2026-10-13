@@ -56,6 +56,54 @@ def fake_result(shots):
     }
 
 
+@pytest.mark.parametrize('index', [0, 2])
+def test_director_accepts_complete_numbered_motion_without_semicolon_delimiters(monkeypatch, tmp_path, index):
+    monkeypatch.setattr(Config, 'BASE_DIR', tmp_path)
+    shots = planned_shots()
+    sections = shots[index]['motion_prompt'].split('；')
+    assert len(sections) == 4
+    original = '。'.join(marker + part for marker, part in zip('①②③④', sections))
+    shots[index]['motion_prompt'] = original
+    class Model:
+        def _call_api(self, **kwargs):
+            return json.dumps(fake_result(shots), ensure_ascii=False)
+    plan = storyboard_director.plan_storyboard('numbered', Model(), script='完整故事',
+        segments=['开场', '过程', '结尾'], summary='三镜故事', style='2D', ratio='16:9')
+    assert plan['status'] == 'completed'
+    saved = plan['shots'][str(index)]['motion_prompt']
+    assert all(part in saved for part in sections)
+    assert all('；' + marker in saved for marker in '②③④')
+
+
+@pytest.mark.parametrize('markers', ['①②④', '①③②④', '①②③③④'])
+def test_director_does_not_guess_missing_or_misordered_motion_sections(monkeypatch, tmp_path, markers):
+    monkeypatch.setattr(Config, 'BASE_DIR', tmp_path)
+    shots = planned_shots()
+    shots[0]['motion_prompt'] = ''.join(marker + '保持人物位置与场景光线，动作缓慢自然。' * 3 for marker in markers) + '[Static shot]'
+    class Model:
+        def _call_api(self, **kwargs):
+            return json.dumps(fake_result(shots), ensure_ascii=False)
+    plan = storyboard_director.plan_storyboard('incomplete', Model(), script='故事',
+        segments=['开场', '过程', '结尾'], summary='三镜故事', style='2D', ratio='16:9')
+    assert plan['status'] == 'failed'
+    assert plan['error']['category'] == 'invalid_shot_structure'
+
+
+@pytest.mark.parametrize('prefix,markers', [('', '②①③④'), ('动作如下：', '①③②④')])
+def test_semicolons_or_preamble_cannot_hide_misordered_numbered_sections(monkeypatch, tmp_path, prefix, markers):
+    monkeypatch.setattr(Config, 'BASE_DIR', tmp_path)
+    shots = planned_shots()
+    sections = shots[0]['motion_prompt'].split('；')
+    shots[0]['motion_prompt'] = prefix + '；'.join(marker + part for marker, part in zip(markers, sections))
+    class Model:
+        def _call_api(self, **kwargs):
+            return json.dumps(fake_result(shots), ensure_ascii=False)
+    plan = storyboard_director.plan_storyboard('misordered', Model(), script='故事',
+        segments=['开场', '过程', '结尾'], summary='三镜故事', style='2D', ratio='16:9')
+    assert plan['status'] == 'failed'
+    assert plan['error']['category'] == 'invalid_shot_structure'
+
+
 def test_cut_does_not_force_identical_consecutive_frames():
     plan = storyboard_director._normalize_plan(fake_result(planned_shots()), 3)
     first = plan["shots"]["0"]
