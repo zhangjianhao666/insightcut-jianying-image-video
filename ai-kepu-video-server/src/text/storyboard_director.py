@@ -16,6 +16,7 @@ from src.text.continuity import normalize_boundaries, normalize_shot, audit_plan
 
 log = logging.getLogger(__name__)
 _PLAN_VERSION = 4
+_PROMPT_VERSION = 2
 # Shared fallback so a shot without a planned motion script still tells the
 # image-to-video model to continue the previous frame instead of starting over.
 DEFAULT_MOTION_PROMPT = (
@@ -43,7 +44,7 @@ def _location(task_id):
 def _signature(script, segments, summary, style, ratio):
     payload = json.dumps(
         {"script": script, "segments": segments, "summary": summary,
-         "style": style, "ratio": ratio, "version": _PLAN_VERSION},
+         "style": style, "ratio": ratio, "version": _PLAN_VERSION, "prompt_version": _PROMPT_VERSION},
         ensure_ascii=False, sort_keys=True,
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
@@ -94,7 +95,7 @@ def _normalize_plan(raw, count):
             "image_prompt": image_prompt,
             "motion_prompt": motion_prompt or DEFAULT_MOTION_PROMPT,
             **({"duration": shot["duration"]} if type(shot.get("duration")) is int and 4 <= shot["duration"] <= 15 else {}),
-            "purpose": str(shot.get("purpose") or "")[:400],
+            "purpose": str(shot.get("purpose") or "").strip(),
             "visual_contract": shot.get("visual_contract") or {},
             "shot_type": str(shot.get("shot_type") or "scene")[:50],
             **normalize_shot(shot, index),
@@ -188,7 +189,11 @@ def plan_storyboard(task_id, generator, *, script, segments, summary, style, rat
         "不要假定每个镜头的尾帧必须等于下一镜头的首帧：正常切镜可以从全景切特写、反打镜头或跨场景；"
         "只有标记为 continue 的同场景连续动作才要求动作方向、姿态和站位接续。"
         "match_cut 则只匹配视觉元素或动作方向，不要求两帧像素相同。"
-        "全片固定角色长相、服装、色彩体系和摄影风格；场景变化必须是剧情需要，不要无故改变道具和角色。"
+        "先理解这一集的叙事推进，再自主决定每镜的视觉表达、人物是否出镜、景别、机位、动作和节奏。"
+        "画面应帮助观众理解当前信息，不能只把每句旁白换成相似的主持人站姿；不要为求变化无故切场景。"
+        "全片始终绑定同一个 IP、服装和画风。人物出现时外貌、发型、体型、服装与配饰必须一致；"
+        "只露手或衣袖时，肤色、衣袖和可见配饰仍沿用同一人物设定。人物不出镜不代表更换讲述者。"
+        "同一实际场景的布局、道具和光线保持可解释的连续性；摄影语言可随叙事需要变化，画风不能漂移。"
         "返回纯 JSON 对象：visual_bible(character_lock, environment_lock, art_direction,"
         " camera_language, negative_rules) 和 shots 列表。"
         "shots 每项必须包含：index(0开始)、scene_id(同一实际场景用同一编号，如 scene_01)、"
@@ -197,11 +202,17 @@ def plan_storyboard(task_id, generator, *, script, segments, summary, style, rat
         "end_state(镜头结束状态)、transition_to_next(cut/match_cut/continue 之一)、"
         "shot_type(scene/portrait/diagram/transition)、"
         "visual_contract(subject_mode:character/hands/object/diagram, framing:wide/medium/close_up/extreme_close_up/top_down, text_policy:forbidden)。"
-        "纯食材特写使用object，不要无条件把主持人塞进每个画面；仅出现手时用hands，图解用diagram。"
+        "visual_contract 是对你自主设计的画面的分类，不是预先规定镜头模板；先设计画面，再填分类。"
+        "character 表示画面有人物面部或身体，hands 表示仅可见手部，object 表示无人物的主体，diagram 表示图解。"
+        "character_ids 只列实际可见角色；不要求 IP 每镜出镜，也不能因改变景别而更换 IP。"
+        "返回前逐镜自检：分类、景别、首帧内容、开场状态和动作描述不能相互矛盾；"
+        "hands 不能同时描述人物面部或身体出镜，人物镜头的景别不能声称展示构图范围外的部位。"
+        "动作按真实时长可完成；需要跨越长时间的过程应明确省略或时间压缩，不能暗示瞬间完成。"
         "画面描述必须具体可画，抽象营养概念不得直接变成含文字标签的伪科学图。"
         "每项只描述一个可独立生成的连续画面；禁止在单镜内拼图、分屏或多个并列画面，多个做法分到不同镜头。"
-        "image_prompt(英文35-60词：主体/景别/机位/光线/角色标识)、"
-        "motion_prompt(中文150-400字：主角动作与运镜、光影和环境，不含口播台词)。"
+        "purpose(这一镜在叙事中的作用，以及画面如何帮助理解对应旁白)、"
+        "image_prompt(英文：明确单张首帧实际可见的内容、构图和必要的连续性信息，避免堆砌画质形容词)、"
+        "motion_prompt(中文150-400字：描述镜头时长内可完成的动作、运镜和声画关系，不另写口播台词)。"
         "motion_prompt 分四段用分号隔开：① 开场状态与视觉约束；② 动作顺序与速度；"
         "③ [Push in]、[Pan left]、[Tracking shot] 或 [Static shot] 等运镜；"
         "④ 本镜头收尾姿态。不要无条件写承接上一镜头尾帧。"
@@ -211,8 +222,9 @@ def plan_storyboard(task_id, generator, *, script, segments, summary, style, rat
     video = Config.load_model_config().get("video") or {}
     if video.get("provider") == "minimax" and is_h3_model(video.get("model")):
         instructions += (
-            "本期采用 H3 原生中文讲解，每个分镜由同一 IP 主持人说出对应原文。"
-            "动作脚本描述自然口型、表演和视线，不得禁止对白、讲话或口型；"
+            "本期采用 H3 原生中文讲解，全片由同一个 IP 声音讲述对应原文。"
+            "导演自主决定出镜讲述或画外讲述；出镜讲话时描述自然口型与表演，"
+            "画外讲述时不添加说话人物、不要求主体口型；任何镜头都不能禁止整段讲解音轨。"
             "准确台词由系统从分镜原文编译，声音参考由系统绑定，不要改写台词或生成字幕。"
         )
     else:
@@ -228,15 +240,15 @@ def plan_storyboard(task_id, generator, *, script, segments, summary, style, rat
                     "name", "persona", "voice_style", "catchphrase", "canon", "visual_identity", "outfit",
                     "world", "art_style", "camera_style", "negative_rules"
                 )
-            }, ensure_ascii=False)[:2000]
-            + "\n请让这一 IP 作为本集的稳定讲述者或画面主角。"
+            }, ensure_ascii=False)
+            + "\n该 IP 是全片稳定讲述者；自主决定何时出镜，角色可见部分必须遵守以上外观和服装设定。"
         )
     payload = (
         f"{instructions}\n画风：{style[:250]}\n画幅：{ratio}\n全文总结：{summary[:650]}"
         f"\n分镜编号与对应旁白：{json.dumps(excerpt, ensure_ascii=False)}"
         + ip_prompt
         + (f"\nshots 每镜还必须包含duration（4至15秒整数），全部duration之和必须是{target_duration}秒。" if target_duration else "")
-        + ("\n导演已决定的逐镜时长与意图（必须遵守，不改台词）：" + json.dumps(outline, ensure_ascii=False) if outline else "")
+        + ("\n已确认的旁白边界、逐镜时长与叙事作用（保留原文与时长，自主设计画面并填写视觉purpose）：" + json.dumps(outline, ensure_ascii=False) if outline else "")
     )
     error = None
     stage = "provider"
@@ -285,7 +297,7 @@ def plan_storyboard(task_id, generator, *, script, segments, summary, style, rat
             **parsed["visual_bible"], **{k: v for k, v in ip_bible.items() if v}
         }
     record = {
-        "version": _PLAN_VERSION, "fingerprint": fingerprint,
+        "version": _PLAN_VERSION, "prompt_version": _PROMPT_VERSION, "fingerprint": fingerprint,
         "status": "failed" if error else "completed", "error": error,
         "ip_id": (ip_profile or {}).get("ip_id"),
         "segments": list(segments), "outline": outline, "visual_bible": parsed["visual_bible"],
@@ -293,7 +305,10 @@ def plan_storyboard(task_id, generator, *, script, segments, summary, style, rat
     }
     if outline and not error:
         for i, item in enumerate(outline):
-            record["shots"][str(i)].update(duration=item["duration"], purpose=item["purpose"])
+            shot = record["shots"][str(i)]
+            shot.update(duration=item["duration"], narrative_purpose=item["purpose"])
+            if not shot.get("purpose"):
+                shot["purpose"] = item["purpose"]
     record["continuity_warnings"] = audit_plan(record)
     _write(task_id, record)
     return record
@@ -312,9 +327,11 @@ def direct_segments(generator, script, *, target_duration=None):
         raise ValueError("当前原生视频流程单次最多规划 180 秒，请缩短文稿")
     prompt = (
         "你是科普动画导演。请根据完整文稿决定分镜边界与逐镜时长，而不是按固定字数切句。"
-        "每镜表达一个清晰的信息或动作，可用人物中景、食材特写、俯拍示范、无文字示意图；"
-        "避免重复构图。不要把每一句话独立成镜，完整解释可以跨几句话。"
-        "返回纯JSON：{\"shots\":[{\"text\":\"原文连续片段\",\"duration\":10,\"purpose\":\"本镜讲述目的和画面意图\"}]}。"
+        "从全篇的开场、解释和收尾安排信息推进，自主决定信息边界与节奏，不套用固定镜头模板。"
+        "本阶段只决定旁白边界、时长和叙事作用；purpose 写清楚观众在这一镜理解什么，以及与前后信息的关系。"
+        "不要在本阶段提前锁定具体构图、人物动作、机位或图形做法，具体视觉设计交给后续分镜导演。"
+        "不要把每一句话独立成镜，完整解释可以跨几句话；也不要为凑镜头数重复相同画面。"
+        "返回纯JSON：{\"shots\":[{\"text\":\"原文连续片段\",\"duration\":10,\"purpose\":\"本镜叙事作用及前后信息关系\"}]}。"
         "所有text按顺序拼接必须等于原文（仅允许空白变化），不得改写、删减、添加台词。"
         "duration是4到15秒整数，适合自然语速和动作；一般每秒3至5个中文字，留出停顿。"
         "最多12镜，所有duration之和必须等于目标秒数。根据内容选不同镜头时长，不必等长。"
@@ -336,8 +353,8 @@ def direct_segments(generator, script, *, target_duration=None):
                 if type(duration) is not int or not 4 <= duration <= 15:
                     raise ValueError("每镜时长必须是4至15秒整数")
                 if not isinstance(item.get("text"), str) or not item["text"].strip() or not item.get("purpose"):
-                    raise ValueError("每镜必须有完整原文和画面意图")
-                result.append({"text": item["text"].strip(), "duration": duration, "purpose": str(item["purpose"])[:400]})
+                    raise ValueError("每镜必须有完整原文和叙事作用")
+                result.append({"text": item["text"].strip(), "duration": duration, "purpose": str(item["purpose"]).strip()})
             clean = lambda value: re.sub(r"\s+", "", value)
             if clean("".join(item["text"] for item in result)) != clean(script):
                 raise ValueError("分镜文本没有完整保留原文与顺序")

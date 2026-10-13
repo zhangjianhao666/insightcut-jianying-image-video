@@ -87,3 +87,56 @@ def test_bound_reference_without_identity_cannot_invent_character(tmp_path, monk
     assert plan['status'] == 'failed'
     assert plan['error']['category'] == 'reference_identity_missing'
     assert g.calls == 0
+
+
+def test_boundary_director_chooses_visual_language_without_fixed_examples():
+    class Capture(Director):
+        def _call_api(self, **kwargs):
+            self.prompt = kwargs['messages'][0]['content']
+            return super()._call_api(**kwargs)
+    g = Capture([{'shots': [{'text': '鹰嘴豆。', 'duration': 10, 'purpose': '介绍豆类'}]}])
+    direct_segments(g, '鹰嘴豆。', target_duration=10)
+    assert '可用人物中景、食材特写、俯拍示范、无文字示意图' not in g.prompt
+    assert '自主' in g.prompt
+
+
+def test_native_director_can_keep_ip_narration_offscreen(tmp_path, monkeypatch):
+    from src.config import Config
+    from src.text import ip_library, storyboard_director
+    monkeypatch.setattr(Config, 'BASE_DIR', tmp_path)
+    monkeypatch.setattr(Config, 'load_model_config', lambda: {'video': {'provider': 'minimax', 'model': 'MiniMax-H3'}})
+    monkeypatch.setattr(ip_library, 'project_ip', lambda _: {'name': 'Vivian', 'visual_identity': 'Same Vivian brown hair', 'outfit': 'Burgundy top'})
+    class Capture:
+        def _call_api(self, **kwargs):
+            self.prompt = kwargs['messages'][0]['content']
+            return json.dumps({'shots': [], 'visual_bible': {}})
+    g = Capture()
+    storyboard_director.plan_storyboard('test', g, script='鹰嘴豆。', segments=['鹰嘴豆。'], summary='豆类', style='Family Guy', ratio='16:9')
+    assert '每个分镜由同一 IP 主持人说出对应原文' not in g.prompt
+    assert '画外' in g.prompt
+    assert '衣袖' in g.prompt and 'Burgundy top' in g.prompt
+
+
+def test_shot_design_purpose_survives_outline_merge(tmp_path, monkeypatch):
+    from src.config import Config
+    from src.text import ip_library, storyboard_director
+    monkeypatch.setattr(Config, 'BASE_DIR', tmp_path)
+    monkeypatch.setattr(ip_library, 'project_ip', lambda _: None)
+    shot = {'index': 0, 'purpose': '通过碗与餐盘的空间关系表达日常一餐',
+            'image_prompt': 'One white bowl and a plain dinner plate on a wooden table',
+            'motion_prompt': '开场保持固定画风、桌面、碗和餐盘的位置关系，光线平稳，所有物体边缘清晰。' * 3 + '；碗缓慢移向餐盘，动作平稳不夸张，桌面与背景没有变化；[Static shot] 镜头保持俯拍，不发生跳切，不添加人物或字幕；结尾碗与餐盘并排停稳，留下明确稳定的画面。',
+            'camera': 'top-down', 'start_state': 'bowl beside plate', 'end_state': 'bowl close to plate'}
+    g = Director([{'visual_bible': {}, 'shots': [shot]}])
+    plan = storyboard_director.plan_storyboard('test', g, script='鹰嘴豆。', segments=['鹰嘴豆。'],
+        summary='豆类', style='2D', ratio='16:9', target_duration=10,
+        outline=[{'text': '鹰嘴豆。', 'duration': 10, 'purpose': '介绍日常食材'}])
+    assert plan['status'] == 'completed'
+    assert plan['shots']['0']['purpose'] == shot['purpose']
+    assert plan['shots']['0']['narrative_purpose'] == '介绍日常食材'
+
+
+def test_visual_purpose_is_not_silently_truncated():
+    from src.text.storyboard_director import _normalize_plan
+    purpose = '这一镜完整视觉设计的理由。' * 50
+    plan = _normalize_plan({'shots': [{'index': 0, 'image_prompt': 'A white bowl of beige chickpeas', 'purpose': purpose}]}, 1)
+    assert plan['shots']['0']['purpose'] == purpose
