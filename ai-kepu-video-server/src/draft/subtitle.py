@@ -7,7 +7,7 @@ import tempfile
 from pathlib import Path
 from typing import Iterable
 
-from src.utils.subtitle_text import normalize_subtitle_text
+from src.utils.subtitle_text import normalize_subtitle_text, wrap_subtitle_text
 
 
 class SubtitleWriter:
@@ -15,8 +15,11 @@ class SubtitleWriter:
 
     SUPPORTED_FORMATS = {"srt", "vtt"}
 
-    def __init__(self, default_duration: float = 4.0):
+    def __init__(self, default_duration: float = 4.0, *, max_line_width: int | None = None):
         self.default_duration = max(0.001, float(default_duration))
+        if max_line_width is not None and max_line_width < 4:
+            raise ValueError("字幕行宽必须至少为 4")
+        self.max_line_width = max_line_width
 
     def _duration(self, segment: dict) -> float:
         value = segment.get("duration")
@@ -54,6 +57,8 @@ class SubtitleWriter:
             start = cursor
             cursor += self._duration(segment)
             text = normalize_subtitle_text(segment.get("text") or "")
+            if self.max_line_width:
+                text = "\n".join(wrap_subtitle_text(text, self.max_line_width))
             blocks.append(
                 f"{index}\n"
                 f"{self._timestamp(start, separator)} --> "

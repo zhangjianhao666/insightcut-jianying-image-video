@@ -235,3 +235,23 @@ def test_queued_delivery_cancel_releases_lifecycle_without_running(tmp_path,monk
             assert task_runtime.wait_until_stopped('queued',1)
             assert video_first._load('queued')['status']=='interrupted'
         finally:block.set()
+
+
+def test_long_native_subtitles_use_speech_cues_and_fit_two_lines(tmp_path):
+    from src.utils.subtitle_text import normalize_subtitle_text
+    first='脂肪含量不算高，而且以不饱和脂肪酸为主。'
+    second='可以把它看作日常饮食里一种很实在的植物性食材，但不必神化成超级食物。'
+    speech=[[{'start':1,'end':5,'text':first},{'start':6,'end':13,'text':second}]]
+    srt,vtt=delivery.write_subtitles(tmp_path,[first+second],speech,[{'start':0,'end':14}],[14])
+    blocks=srt.read_text().strip().split('\n\n')
+    assert len(blocks)>=2
+    assert '00:00:01,000 --> 00:00:05,000' in blocks[0]
+    assert '00:00:06,000 -->' in blocks[1]
+    texts=[]
+    for block in blocks:
+        lines=block.splitlines()[2:]
+        assert 1<=len(lines)<=2
+        assert all(len(line)<=20 for line in lines)
+        texts.extend(lines)
+    assert ''.join(texts)==normalize_subtitle_text(first+second)
+    assert '\n'.join(texts) in vtt.read_text() or all(line in vtt.read_text() for line in texts)

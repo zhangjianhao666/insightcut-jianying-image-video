@@ -132,17 +132,35 @@ def delivery_windows(durations, speeches, max_duration):
     return windows
 
 
-def write_subtitles(directory, texts, speeches, windows, rendered_durations):
+def write_subtitles(directory, texts, speeches, windows, rendered_durations, *, max_line_width=40):
+    from src.utils.subtitle_text import (
+        normalize_subtitle_text, subtitle_display_width, wrap_subtitle_text,
+    )
     spans = []
-    for text, speech, window, duration in zip(texts, speeches, windows, rendered_durations):
-        start = max(0., float(speech[0]['start']) - window['start'])
-        end = min(duration, float(speech[-1]['end']) - window['start'] + .04)
-        for value, length in [('', start), (text, end-start), ('', duration-end)]:
-            if length > .00001:
-                spans.append({'segment_index': len(spans), 'text': value, 'duration': length})
+    def append(text, length):
+        if length > .00001:
+            spans.append({'segment_index': len(spans), 'text': text, 'duration': length})
+    for original, speech, window, duration in zip(texts, speeches, windows, rendered_durations):
+        cursor = 0.
+        for index, item in enumerate(speech):
+            start = max(cursor, float(item['start']) - window['start'], 0.)
+            end = min(duration, float(item['end']) - window['start'] + (.04 if index == len(speech)-1 else 0))
+            text = normalize_subtitle_text(item.get('text') or (original if len(speech) == 1 else ''))
+            if end <= start or not text:
+                continue
+            lines = wrap_subtitle_text(text, max_line_width)
+            # At most two lines per cue. Sentence timestamps are measured;
+            # sub-cue timing within a long sentence is proportionally estimated.
+            chunks = [''.join(lines[i:i+2]) for i in range(0, len(lines), 2)]
+            weights = [subtitle_display_width(chunk) for chunk in chunks]
+            append('', start-cursor)
+            for chunk, weight in zip(chunks, weights):
+                append(chunk, (end-start)*weight/sum(weights))
+            cursor = end
+        append('', duration-cursor)
     results = []
     for format in ('srt', 'vtt'):
-        raw = SubtitleWriter().render(spans, format)
+        raw = SubtitleWriter(max_line_width=max_line_width).render(spans, format)
         if format == 'vtt':
             raw = raw.removeprefix('WEBVTT\n\n')
         blocks = []
@@ -233,13 +251,15 @@ def deliver(paths, shots, output, *, ratio='16:9', max_duration=None, subtitles=
     if asset_callback:
         asset_callback({'delivery_path':str(assembled)})
     stage('subtitling')
-    srt, vtt = write_subtitles(run, [s['text'] for s in shots], speeches, windows, rendered)
+    srt, vtt = write_subtitles(run, [s['text'] for s in shots], speeches, windows, rendered,
+                               max_line_width=40 if ratio == '16:9' else 18)
     if asset_callback:
         asset_callback({'subtitle_path':str(srt), 'vtt_path':str(vtt)})
     final = run/'captioned.mp4'
     if subtitles:
         font = 'Heiti SC' if Path('/System/Library/Fonts').is_dir() else 'Noto Sans CJK SC'
-        style = f'FontName={font},FontSize=18,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,Outline=1.4,Shadow=0.5,Alignment=2,MarginV=18'
+        font_size = 18 if ratio == '16:9' else 14
+        style = f'FontName={font},FontSize={font_size},PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,Outline=1.4,Shadow=0.5,Alignment=2,MarginV=18,MarginL=24,MarginR=24'
         _run([ff,'-v','error','-y','-i',str(assembled),'-vf',f"subtitles=filename=dialogue.srt:force_style='{style}'",'-c:v','libx264','-preset','veryfast','-crf','20','-c:a','copy','-movflags','+faststart',str(final)],cwd=run)
     else:
         shutil.copy2(assembled, final)
