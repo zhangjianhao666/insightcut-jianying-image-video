@@ -313,6 +313,38 @@ class FFmpegExporter:
         if total_frames < 1:
             total_frames = 1
 
+        # Prefer already-generated dynamic motion instead of synthesizing a
+        # Ken Burns effect. Original video audio is intentionally ignored:
+        # narration is authoritative for duration and synchronization.
+        if Path(image_path).suffix.lower() in {".mp4", ".mov", ".webm"}:
+            output_path = str(Path(tmp_dir) / f"seg_{index:04d}.mp4")
+            vf = (
+                f"fps={self.fps},"
+                f"scale={self.width}:{self.height}:force_original_aspect_ratio=increase,"
+                f"crop={self.width}:{self.height},"
+                f"{self._drawtext_expr(text)}"
+            )
+            cmd = [self._ffmpeg, "-y", "-stream_loop", "-1", "-i", image_path]
+            if audio_path:
+                cmd += ["-i", audio_path]
+            cmd += ["-vf", vf, "-map", "0:v"]
+            if audio_path:
+                cmd += ["-map", "1:a", "-c:a", "aac", "-b:a", "192k", "-ar", "24000", "-ac", "1"]
+            cmd += ["-c:v", self._encoder]
+            if self._use_crf:
+                cmd += ["-preset", self.preset, "-crf", str(self.crf)]
+            cmd += [
+                "-pix_fmt", "yuv420p", "-profile:v", "baseline", "-level", "3.0",
+                "-t", f"{duration_s:.3f}", "-movflags", "+faststart", output_path,
+            ]
+            result = self._run_command(
+                cmd, capture_output=True, text=True, timeout=600,
+                encoding="utf-8", errors="replace",
+            )
+            if result.returncode != 0:
+                raise RuntimeError(f"FFmpeg dynamic segment {index} failed: {result.stderr[-200:]}")
+            return output_path
+
         # 构建滤镜链
         # 优化：先缩小到目标分辨率附近，再做动画处理，避免在超高分辨率上计算
         # zoompan 工作区设为目标分辨率的 1.2 倍（足够容纳缩放+平移）

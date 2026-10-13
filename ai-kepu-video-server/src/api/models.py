@@ -47,6 +47,7 @@ class SubtitleOptions(BaseModel):
 class GenerationOptions(BaseModel):
     """任务级生成策略；只影响后续生成操作。"""
 
+    target_duration_seconds: Optional[int] = Field(None, ge=4, le=3600)
     prompt_concurrency: int = Field(4, ge=1, le=8)
     image_concurrency: int = Field(8, ge=1, le=8)
     retry_count: int = Field(2, ge=0, le=5)
@@ -78,6 +79,7 @@ class CreateTaskRequest(BaseModel):
     )
     source_draft_id: Optional[str] = Field(None, max_length=120)
     template_id: Optional[str] = Field(None, max_length=64)
+    ip_profile_id: Optional[str] = Field(None, max_length=80, description="关联已创建的系列 IP 角色")
     generation_options: Optional[GenerationOptions] = None
     subtitle_options: Optional[SubtitleOptions] = None
 

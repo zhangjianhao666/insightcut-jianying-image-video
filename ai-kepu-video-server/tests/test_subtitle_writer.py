@@ -46,3 +46,21 @@ def test_subtitle_writer_atomically_replaces_existing_file(tmp_path, monkeypatch
     assert result == target
     assert replacements and replacements[0][1] == target
     assert "你好世界" in target.read_text(encoding="utf-8")
+
+
+def test_subtitle_writer_can_wrap_mixed_text_without_changing_default():
+    text='大家好我是Vivian今天介绍鹰嘴豆和它的常见吃法'
+    segments=[{'text':text,'duration':3}]
+    assert '\n'+text+'\n' in SubtitleWriter().render(segments)
+    wrapped=SubtitleWriter(max_line_width=36).render(segments)
+    lines=wrapped.strip().splitlines()[2:]
+    assert len(lines)==2
+    assert ''.join(lines)==text
+
+
+def test_two_caption_lines_avoid_a_tiny_orphan_tail():
+    text='可以把它看作日常饮食里一种很实在的植物性食材'
+    lines=SubtitleWriter(max_line_width=40).render([{'text':text,'duration':5}]).strip().splitlines()[2:]
+    assert len(lines)==2
+    assert min(map(len,lines))>=8
+    assert ''.join(lines)==text

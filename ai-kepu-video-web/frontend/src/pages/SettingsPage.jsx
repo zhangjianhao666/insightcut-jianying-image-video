@@ -3,6 +3,7 @@ import {
   ArrowLeft,
   CheckCircle2,
   CircleAlert,
+  Clapperboard,
   Cpu,
   Image,
   LoaderCircle,
@@ -41,6 +42,13 @@ import { EmptyState, LoadingState } from '../components/StatusStates'
 import { EmptyStateCard } from '../components/ui/EmptyStateCard'
 import {
   AGNES_PRESET,
+  HAILUO_MODELS,
+  WAN_IMAGE_PRESET,
+  applyVideoModel,
+  applyVideoResolution,
+  isH3Model,
+  chooseImageProvider,
+  chooseVideoProvider,
   normalizeConcurrency,
   normalizeConfig,
   normalizeRetryCount,
@@ -49,6 +57,8 @@ import {
   restoreMimoTechnicalPreset,
   validateConfig,
   validateTtsTest,
+  videoDurationOptions,
+  videoResolutionOptions,
 } from '../lib/settingsConfig'
 import {
   buildProviderRefreshPayload,
@@ -66,9 +76,11 @@ import { normalizeMediaUrl } from '../utils/mediaUrl'
 import './delivery-pages.css'
 
 const IMAGE_SIZES = ['auto', '1024x1024', '1536x1024', '1024x1536', '1792x1024', '1024x1792', '1920x1080', '1080x1920']
+const WAN_SIZES = ['auto', '1280x720', '720x1280', '960x1280', '1280x960', '1024x1024']
 const SECTION_LINKS = [
   { id: 'settings-llm', label: '生文模型', icon: MessageSquareText },
-  { id: 'settings-image', label: 'Agnes 生图', icon: Image },
+  { id: 'settings-image', label: 'AI 生图', icon: Image },
+  { id: 'settings-video', label: 'AI 动态视频', icon: Clapperboard },
   { id: 'settings-tts', label: '配音模型', icon: Volume2 },
   { id: 'settings-runtime', label: '生成策略', icon: Cpu },
 ]
@@ -232,9 +244,9 @@ export function SettingsPage({ embedded = false, onClose }) {
     const mimoReady = !mimoEnabled || Boolean(form.tts.mimo.base_url && form.tts.mimo.api_key && form.tts.mimo.model && form.tts.mimo.clone_model && form.tts.mimo.default_voice)
     return [
       { label: '生文 API', ready: llmReady, detail: llmReady ? form.llm.model : '配置不完整' },
-      { label: 'Agnes 生图', ready: imageReady, detail: imageReady ? form.image.model : '配置不完整' },
-      { label: '豆包 TTS', ready: doubaoReady, detail: doubaoEnabled ? (doubaoReady ? '已启用' : '配置不完整') : '未启用' },
-      { label: 'MiMo TTS', ready: mimoReady, detail: mimoEnabled ? (mimoReady ? '已启用' : '配置不完整') : '未启用' },
+      { label: form.image.provider === 'wan' ? '百炼万相生图' : form.image.provider === 'minimax' ? 'MiniMax 生图' : 'Agnes 生图', ready: imageReady, detail: imageReady ? form.image.model : '配置不完整' },
+      { label: '豆包 TTS', ready: form.tts.allow_silent_mode || doubaoReady, detail: form.tts.allow_silent_mode && !doubaoReady ? '未配置 · 无旁白模式下可跳过' : doubaoEnabled ? (doubaoReady ? '已启用' : '配置不完整') : '未启用' },
+      { label: 'MiMo TTS', ready: form.tts.allow_silent_mode || mimoReady, detail: form.tts.allow_silent_mode && !mimoReady ? '未配置 · 无旁白模式下可跳过' : mimoEnabled ? (mimoReady ? '已启用' : '配置不完整') : '未启用' },
     ]
   }, [form, selectedLlmProvider])
 
@@ -563,7 +575,7 @@ export function SettingsPage({ embedded = false, onClose }) {
 
   const saveConfig = async () => {
     const reconciledTts = reconcileTtsVoiceConfig(form.tts, voices)
-    if (!hasUsableVoice(voices, reconciledTts.enabled_providers)) {
+    if (!reconciledTts.allow_silent_mode && !hasUsableVoice(voices, reconciledTts.enabled_providers)) {
       toast.warning('至少保留一个可用音色')
       return
     }
@@ -652,21 +664,92 @@ export function SettingsPage({ embedded = false, onClose }) {
             />
           </ConfigSection>
 
-          <ConfigSection id="settings-image" icon={Image} title="Agnes 生图" badge="Image" description="真实调用 Agnes Image 2.1 Flash 图片生成接口。">
-            <Field label="服务商 / 模型" wide group><span className="settings-fixed-summary">Agnes / <code>{AGNES_PRESET.model}</code></span></Field>
-            <Field label="API Key"><input type="password" autoComplete="off" value={form.image.api_key} onChange={event => updateSection('image', 'api_key', event.target.value)} placeholder="sk-..." /></Field>
-            <Field label="图片尺寸"><select value={form.image.size} onChange={event => updateSection('image', 'size', event.target.value)}>{IMAGE_SIZES.map(size => <option value={size} key={size}>{size === 'auto' ? '自动匹配画幅' : size}</option>)}</select></Field>
+          <ConfigSection id="settings-image" icon={Image} title="图片生成" badge="Image" description="支持 MiniMax Image-01（IP参考图）、百炼万相 2.7 与 Agnes 生图，均保留图片版本和逐镜头重试。">
+            <Field label="图片 Provider" wide group>
+              <Segmented value={form.image.provider} onChange={value => setForm(current => chooseImageProvider(current, value))}
+                options={[[ 'wan', '百炼万相' ], [ 'minimax', 'MiniMax' ], [ 'agnes', 'Agnes' ]]} />
+            </Field>
+            <Field label="当前模型" wide group>
+              <span className="settings-fixed-summary">
+                {form.image.provider === 'wan' ? '万相 / ' : form.image.provider === 'minimax' ? 'MiniMax / ' : 'Agnes / '}
+                <code>{form.image.model}</code>
+              </span>
+            </Field>
+            <Field label="API Key"><input type="password" autoComplete="off" value={form.image.api_key}
+              onChange={event => updateSection('image', 'api_key', event.target.value)} placeholder="本地密钥，不要提交 Git" /></Field>
+            <Field label="图片尺寸"><select value={form.image.size}
+              onChange={event => updateSection('image', 'size', event.target.value)}>
+              {(form.image.provider !== 'agnes' ? WAN_SIZES : IMAGE_SIZES).map(size =>
+                <option value={size} key={size}>{size === 'auto' ? '自动匹配分镜画幅' : size}</option>)}
+            </select></Field>
+            {form.image.provider === 'wan' ? <p className="settings-fixed-summary">
+              使用当前北京工作空间的 /api/v1 接口；切换到万相时自动填充当前 LLM 服务地址和 Key（可修改）。
+              生成图片会产生费用，建议先测试一张图。
+            </p> : null}
             <AdvancedSettings
               title="高级配置"
               summary={`${form.image.api_url || '未设置 URL'} · ${form.image.model || '未设置模型'}`}
-              onRestore={() => setForm(current => restoreAgnesPreset(current))}
+              onRestore={() => setForm(current => current.image.provider === 'minimax'
+                ? chooseImageProvider(current, 'minimax')
+                : current.image.provider === 'wan'
+                ? { ...current, image: { ...current.image, ...WAN_IMAGE_PRESET } }
+                : restoreAgnesPreset(current))}
             >
-              <label><span>API URL</span><input value={form.image.api_url} onChange={event => updateSection('image', 'api_url', event.target.value)} placeholder={AGNES_PRESET.api_url} /></label>
-              <label><span>Model</span><input value={form.image.model} onChange={event => updateSection('image', 'model', event.target.value)} placeholder={AGNES_PRESET.model} /></label>
+              <label><span>API URL</span><input value={form.image.api_url}
+                onChange={event => updateSection('image', 'api_url', event.target.value)}
+                placeholder={form.image.provider === 'wan' ? 'https://WORKSPACE.cn-beijing.maas.aliyuncs.com/api/v1' : AGNES_PRESET.api_url} /></label>
+              <label><span>Model</span><input value={form.image.model}
+                onChange={event => updateSection('image', 'model', event.target.value)}
+                placeholder={form.image.provider === 'wan' ? WAN_IMAGE_PRESET.model : AGNES_PRESET.model} /></label>
             </AdvancedSettings>
           </ConfigSection>
 
-          <ConfigSection id="settings-tts" icon={Volume2} title="配音模型" badge="2 Providers" description="豆包与 MiMo 可同时启用；每个项目会保存音色和参数快照。">
+          <ConfigSection id="settings-video" icon={Clapperboard} title="AI 动态视频" badge="Video" description="逐镜头图生视频，按镜头单独计费；MiniMax-H3 生成的片段自带音效，也可切回无声模型或百炼万相。">
+            <Field label="视频 Provider" wide group>
+              <Segmented value={form.video.provider} onChange={value => setForm(current => chooseVideoProvider(current, value))}
+                options={[['minimax', 'MiniMax 海螺'], ['wan', '百炼万相']]} />
+            </Field>
+            {form.video.provider === 'minimax' ? <>
+              <Field label="API Key"><input type="password" autoComplete="off" value={form.video.api_key}
+                onChange={event => updateSection('video', 'api_key', event.target.value)} placeholder="MiniMax API Key，不要提交 Git" /></Field>
+              <Field label="模型" wide><select value={form.video.model}
+                onChange={event => setForm(current => applyVideoModel(current, event.target.value))}>
+                {HAILUO_MODELS.map(model => <option value={model} key={model}>{model}</option>)}
+              </select></Field>
+              <Field label="分辨率" wide group>
+                <Segmented value={form.video.resolution} onChange={value => setForm(current => applyVideoResolution(current, value))}
+                  options={videoResolutionOptions(form.video.model).map(value => [value, value])} />
+              </Field>
+              <Field label="单镜头时长" wide><select value={form.video.duration ?? ''}
+                onChange={event => updateSection('video', 'duration', Number(event.target.value))}>
+                {videoDurationOptions('minimax', form.video.resolution, form.video.model).map(value =>
+                  <option value={value} key={value}>{value} 秒</option>)}
+              </select></Field>
+              <p className="settings-fixed-summary"><span>
+                {isH3Model(form.video.model)
+                  ? 'MiniMax-H3 生成 480P / 768P / 2K，单镜头 4–15 秒，成片自带环境音效与拟音（不是可编辑的旁白）；首帧图片以 Base64 直接上传，不需要公网图床。'
+                  : 'Hailuo 2.3 为无声模型：1080P 只支持 6 秒，768P 支持 6 或 10 秒；首帧图片以 Base64 直接上传，不需要公网图床。'}
+                动作提示词里可直接写运镜命令，例如 <code>[Push in]</code>、<code>[Static shot]</code>，共 15 种。
+              </span></p>
+            </> : <p className="settings-fixed-summary"><span>
+              百炼万相沿用当前工作空间的 /api/v1 地址与 LLM Key；服务地址留空即自动复用，单镜头支持 5、10、15 秒。
+            </span></p>}
+            <AdvancedSettings
+              title="高级配置"
+              summary={`${form.video.base_url || '自动复用'} · ${form.video.model || '默认模型'}`}
+              onRestore={() => setForm(current => chooseVideoProvider(current, current.video.provider))}
+            >
+              <label><span>服务地址</span><input value={form.video.base_url}
+                onChange={event => updateSection('video', 'base_url', event.target.value)}
+                placeholder={form.video.provider === 'minimax' ? 'https://api.minimax.cn' : '留空自动复用百炼地址'} /></label>
+              <label><span>Model</span><input value={form.video.model}
+                onChange={event => updateSection('video', 'model', event.target.value)}
+                placeholder={form.video.provider === 'minimax' ? 'MiniMax-H3' : '留空使用工作空间默认'} /></label>
+            </AdvancedSettings>
+          </ConfigSection>
+
+          <ConfigSection id="settings-tts" icon={Volume2} title="配音模型" badge="可选" description="可选本地无旁白模式；需要中文解说时再启用豆包或 MiMo。">
+            <label className="settings-field is-wide"><span>闭环测试模式</span><span><input type="checkbox" checked={Boolean(form.tts.allow_silent_mode)} onChange={event => updateTts('allow_silent_mode', event.target.checked)} /> 暂不配置配音服务，允许保存 LLM / 生图设置</span><small>选择此项后，可以在创建视频时选择“无旁白（仅画面）”。会生成本地静音 WAV 作为时间轴，不会调用配音模型；有声项目仍需合法 TTS 密钥。</small></label>
             <div className="settings-provider-switches"><label><input type="checkbox" checked={form.tts.enabled_providers.includes('doubao')} onChange={event => setProviderEnabled('doubao', event.target.checked)} /><span><strong>豆包 TTS</strong><small>预置 10 个本地音色</small></span></label><label><input type="checkbox" checked={form.tts.enabled_providers.includes('mimo')} onChange={event => setProviderEnabled('mimo', event.target.checked)} /><span><strong>小米 MiMo</strong><small>9 个预置 + 本地声音克隆</small></span></label></div>
             <Field label="新项目默认 Provider" wide group><Segmented value={form.tts.provider} onChange={value => form.tts.enabled_providers.includes(value) ? updateTts('provider', value) : toast.warning('请先启用该 Provider')} options={[['doubao', '豆包 TTS'], ['mimo', '小米 MiMo TTS']]} /></Field>
             <Field label="当前编辑" wide group><Segmented value={providerTab} onChange={setProviderTab} options={[['doubao', '豆包配置'], ['mimo', 'MiMo 配置']]} /></Field>

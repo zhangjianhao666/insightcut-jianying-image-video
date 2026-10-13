@@ -161,7 +161,7 @@ def _resolve_new_task_voice(voice_type: Optional[str], *, validate=True) -> str:
             )
         )
 
-    if not validate:
+    if not validate or selection.provider == "silent":
         return selection.key
     enabled_providers = config.get("enabled_providers") or ["doubao", "mimo"]
     if selection.provider not in enabled_providers:
@@ -212,6 +212,8 @@ def _normalize_subtitle_options(value: Optional[dict]) -> dict:
 def _normalize_generation_options(value: Optional[dict]) -> dict:
     value = value or {}
     return {
+        "target_duration_seconds": (max(4, min(3600, int(value["target_duration_seconds"])))
+                                    if value.get("target_duration_seconds") else None),
         "prompt_concurrency": max(1, min(8, int(value.get("prompt_concurrency") or 4))),
         "image_concurrency": max(1, min(8, int(value.get("image_concurrency") or 8))),
         "retry_count": max(0, min(5, int(value.get("retry_count") if value.get("retry_count") is not None else 2))),
@@ -415,6 +417,7 @@ def _file_signature(raw_path: Optional[str]) -> dict:
 
 def _media_fingerprint(task, segments: List[dict]) -> str:
     from src.export.ffmpeg_exporter import FFmpegExporter
+    from src.media.shot_video_jobs import matching_video_path
 
     task_row = mysql_client.get_task(getattr(task, "task_id", "")) or {}
     payload = {
@@ -437,6 +440,7 @@ def _media_fingerprint(task, segments: List[dict]) -> str:
                 "image_status": seg.get("image_status") or "",
                 "audio_status": seg.get("audio_status") or "",
                 "image": _file_signature(seg.get("image_path")),
+                "video": _file_signature(matching_video_path(task.task_id, seg)),
                 "audio": _file_signature(seg.get("audio_path")),
                 "audio_voice_type": seg.get("audio_voice_type"),
                 "audio_tts_options_json": seg.get("audio_tts_options_json"),
@@ -1498,9 +1502,24 @@ def _export_mp4(
             )
             shutil.copy2(preview_path, render_path)
         source = "cached"
+    elif (mysql_client.get_task(task.task_id) or {}).get("voice_type") == "silent:default":
+        # Video-first exports are strictly generated MP4 footage. NEVER
+        # silently route back to still images + Ken Burns for this mode.
+        from src.media.video_first import completed_path
+        strict_clip = completed_path(task.task_id, segments, ratio=_task_ratio(task))
+        if not strict_clip:
+            raise RuntimeError("AI 动态视频未全部生成或已过期，不能导出图片轮播。请先完成全部图生视频镜头")
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        render_path = output_path.with_name(
+            f".{output_path.stem}.{uuid.uuid4().hex}.video-first.mp4"
+        )
+        shutil.copy2(strict_clip, render_path)
+        source = "video_first"
     else:
         segment_texts = [seg.get("text") or "" for seg in segments]
+        from src.media.shot_video_jobs import matching_video_path
         resolved_images = [_workspace_resolve_file(seg.get("image_path")) for seg in segments]
+        resolved_media = [(matching_video_path(task.task_id, seg) or str(path)) if path else None for seg, path in zip(segments, resolved_images)]
         resolved_audio = [_workspace_resolve_file(seg.get("audio_path")) for seg in segments]
         if any(path is None for path in resolved_images):
             raise RuntimeError("分镜图片文件不存在，无法导出 MP4")
@@ -1514,7 +1533,7 @@ def _export_mp4(
                 subtitle_options=_task_subtitle_options(mysql_client.get_task(task.task_id)),
             ).export(
                 segments=segment_texts,
-                media_paths=[str(path) for path in resolved_images],
+                media_paths=resolved_media,
                 voiceover_files=[str(path) if path else None for path in resolved_audio],
                 output_path=str(render_path),
                 animation_seed=_task_animation_seed(task.task_id),
@@ -1689,6 +1708,7 @@ def _config_readiness(voice_type: Optional[str] = None, phase: str = "full") -> 
         llm_message = "生文和提示词配置已齐全"
 
     image = config.get("image") or {}
+    image_provider = "wan" if image.get("provider") == "wan" else "agnes"
     image_missing = [
         label for field, label in (
             ("api_url", "API URL"),
@@ -1716,9 +1736,11 @@ def _config_readiness(voice_type: Optional[str] = None, phase: str = "full") -> 
         ))
     tts_missing = []
     enabled_providers = tts.get("enabled_providers") or ["doubao", "mimo"]
-    if selection.provider not in enabled_providers:
+    if selection.provider != "silent" and selection.provider not in enabled_providers:
         tts_missing.append("当前配音服务商未启用")
-    if selection.provider == "mimo":
+    if selection.provider == "silent":
+        pass  # Local silent WAVs need no external credentials.
+    elif selection.provider == "mimo":
         mimo = tts.get("mimo") or {}
         for field, label in (
             ("base_url", "Base URL"),
@@ -1758,12 +1780,12 @@ def _config_readiness(voice_type: Optional[str] = None, phase: str = "full") -> 
             "image",
             "图片生成",
             image_status,
-            provider="agnes",
+            provider=image_provider,
             missing=image_missing,
             message=(
                 "生图配置已齐全"
                 if image_status == "ready"
-                else "请先补全 Agnes 生图配置"
+                else f"请先补全 {image_provider} 生图配置"
             ),
         ),
         _readiness_item(
@@ -1773,7 +1795,7 @@ def _config_readiness(voice_type: Optional[str] = None, phase: str = "full") -> 
             provider=selection.provider,
             missing=tts_missing,
             message=(
-                "当前音色所需的配音配置已齐全"
+                ("无需 TTS 密钥：使用本地无旁白模式" if selection.provider == "silent" else "当前音色所需的配音配置已齐全")
                 if tts_status == "ready"
                 else "请先补全当前音色所属服务商的配置"
             ),
@@ -1931,12 +1953,12 @@ async def get_voices(
 ):
     """返回双 provider 预置音色与 MiMo 本地克隆音色。"""
     normalized_provider = (provider or "").strip().lower() or None
-    if normalized_provider not in {None, "doubao", "mimo"}:
-        raise HTTPException(status_code=400, detail="provider 只支持 doubao 或 mimo")
+    if normalized_provider not in {None, "doubao", "mimo", "silent"}:
+        raise HTTPException(status_code=400, detail="provider 只支持 doubao、mimo 或 silent")
     presets = mysql_client.list_tts_voices(
         provider=normalized_provider,
         include_disabled=include_disabled,
-    )
+    ) if normalized_provider != "silent" else []
     result = [
         {
             "id": voice["id"],
@@ -1955,6 +1977,24 @@ async def get_voices(
         }
         for voice in presets
     ]
+    if normalized_provider == "silent" or (
+        normalized_provider is None and Config.tts_config().get("allow_silent_mode")
+    ):
+        result.insert(0, {
+            "id": "silent:default",
+            "voice_id": "default",
+            "name": "无旁白（仅画面）",
+            "gender": "none",
+            "language": "none",
+            "description": "本机生成静音时间轴；无需额外 TTS Key 和费用",
+            "provider": "silent",
+            "kind": "preset",
+            "source": "local",
+            "is_enabled": True,
+            "status": "ready",
+            "preview_url": None,
+            "capabilities": {"speed_level": False},
+        })
     if normalized_provider in {None, "mimo"}:
         for clone in _voice_clone_store().list(include_hidden=include_disabled):
             if not include_disabled and not (
@@ -2382,6 +2422,12 @@ async def create_task(request: CreateTaskRequest):
         _model_dict(request.tts_options, exclude_none=True),
     )
 
+    # Validate the shared IP before task creation. Bind the immutable snapshot
+    # before scheduling script/storyboard jobs, preventing a race on new projects.
+    from src.text.ip_library import get_profile, bind_project
+    if request.ip_profile_id and not get_profile(request.ip_profile_id):
+        raise HTTPException(status_code=400, detail="所选 IP 角色不存在")
+
     # 创建任务
     task_id = task_manager.create_task(
         theme=theme_text,
@@ -2403,6 +2449,9 @@ async def create_task(request: CreateTaskRequest):
             _model_dict(request.subtitle_options, exclude_none=True)
         ),
     )
+
+    if request.ip_profile_id:
+        bind_project(task_id, request.ip_profile_id)
 
     # 启动异步执行
     task_executor.execute_task(
@@ -3214,7 +3263,25 @@ def _workspace_segment_payload(
         task_voice_type=task_voice_type,
         task_options=task_tts_options,
     )
+    from src.media.shot_video_jobs import status as shot_video_status
+    video_state = shot_video_status(segment.get("task_id"), int(segment.get("segment_index") or 0), segment.get("image_path"))
+    from src.text.storyboard_director import lookup_shot
+    direction = lookup_shot(
+        segment.get("task_id"),
+        int(segment.get("segment_index") or 0),
+        segment.get("text") or "",
+    )
     payload = {
+        "motion_prompt": direction.get("motion_prompt") or "",
+        "shot_type": direction.get("shot_type") or "",
+        "scene_id": direction.get("scene_id") or "",
+        "character_ids": direction.get("character_ids") or [],
+        "location_id": direction.get("location_id") or "",
+        "camera": direction.get("camera") or "",
+        "start_state": direction.get("start_state") or "",
+        "end_state": direction.get("end_state") or "",
+        "transition_to_next": direction.get("transition_to_next") or "cut",
+        "video_status": video_state.get("status", "not_generated"),
         "id": segment.get("id"),
         "task_id": segment.get("task_id"),
         "segment_index": segment.get("segment_index"),
@@ -3360,7 +3427,18 @@ def _get_task_workspace_sync(task_id, request):
         task_row.get("error_meta"),
     )
     script_text, script_source = _workspace_script(task_row, segments)
+    from src.text.ip_library import project_ip
+    bound_ip = project_ip(task_id)
+    public_ip = ({
+        "ip_id": bound_ip.get("ip_id"),
+        "name": bound_ip.get("name"),
+        "version": bound_ip.get("version"),
+        "persona": bound_ip.get("persona"),
+        "voice_style": bound_ip.get("voice_style"),
+        "has_reference": bool(bound_ip.get("reference_image")),
+    } if bound_ip else None)
     return {
+        "ip_profile": public_ip,
         "task_id": task_id,
         "name": task_row.get("name") or task_row.get("theme") or "未命名项目",
         "status": task_row.get("status"),
@@ -3377,6 +3455,7 @@ def _get_task_workspace_sync(task_id, request):
         "summary": task_row.get("summary") or "",
         "text_style": parts[0] if parts else "知识科普",
         "visual_style": parts[1] if len(parts) > 1 else "电影质感",
+        "custom_visual_style": parts[2] if len(parts) > 2 else "",
         "ratio": normalize_ratio(task_row.get("ratio") or "16:9"),
         "voice_type": task_row.get("voice_type") or "",
         "tts_options": parsed_options,
@@ -3445,6 +3524,7 @@ def _get_task_workspace_sync(task_id, request):
 
 
 @router.patch("/tasks/{task_id}/settings")
+@_project_media_write
 async def update_task_workspace_settings(task_id: str, payload: dict = Body(...)):
     task_row = mysql_client.get_task(task_id)
     if not task_row:
@@ -3509,6 +3589,9 @@ async def update_task_workspace_settings(task_id: str, payload: dict = Body(...)
         raise HTTPException(status_code=500, detail="保存工作台设置失败")
 
     style_changed = style != old_style or ratio != old_ratio
+    if style_changed:
+        from src.text.storyboard_director import invalidate_review
+        invalidate_review(task_id, style=visual_style, ratio=ratio)
     voice_type_changed = voice_type != old_voice
     tts_options_changed = tts_options_json != task_row.get("tts_options_json")
     voice_changed = voice_type_changed or tts_options_changed
@@ -3590,6 +3673,11 @@ async def generate_task_workspace_assets(task_id: str, response: Response, paylo
     segments = mysql_client.get_segments(task_id)
     if not segments or any(not str(segment.get("image_prompt") or "").strip() for segment in segments):
         raise HTTPException(status_code=409, detail="分镜提示词尚未全部生成")
+    from src.text.storyboard_director import load_plan, planning_blocked
+    candidate = load_plan(task_id) or {}
+    if (candidate.get("review_required") and planning_blocked(candidate)
+            and any(not _workspace_file_ready(segment.get("image_path")) for segment in segments)):
+        raise HTTPException(409, "分镜尚未通过审查，请先审查并修正；已有素材保留")
     if not bool(task_row.get("voice_confirmed")):
         raise HTTPException(status_code=409, detail="请先确认全片配音音色")
     snapshot_key = payload.get("snapshot_key") or ""
@@ -3702,6 +3790,10 @@ async def regenerate_segment_prompt(
     payload: dict = Body(...),
 ):
     """Regenerate one image prompt without invoking image or TTS generation."""
+    feedback = (payload or {}).get("feedback", "")
+    if not isinstance(feedback, str) or len(feedback) > 2000:
+        raise HTTPException(status_code=422, detail="纠错要求必须是最多 2000 字的文本")
+    feedback = feedback.strip()
     task_row = mysql_client.get_task(task_id)
     if not task_row:
         raise HTTPException(status_code=404, detail="任务不存在")
@@ -3726,6 +3818,7 @@ async def regenerate_segment_prompt(
             },
         )
     target = {
+        "feedback": feedback,
         "segment_index": int(segment_index),
         "asset_type": "prompt",
         "mode": "regenerate",
@@ -3743,6 +3836,7 @@ async def regenerate_segment_prompt(
         if (
             active.get("kind") == "regenerate_prompt"
             and active.get("snapshot_key") == snapshot_key
+            and (active_target.get("feedback") or "") == feedback
             and active_target.get("asset_type") == "prompt"
             and int(active_target.get("segment_index", -1)) == int(segment_index)
         ):
@@ -3761,6 +3855,7 @@ async def regenerate_segment_prompt(
     idempotency_key = _operation_idempotency_key(
         "regenerate_prompt", task_row, snapshot_key, [target]
     )
+    idempotency_key += ":" + hashlib.sha256(feedback.encode("utf-8")).hexdigest()
     created = mysql_client.create_task_operation(
         task_id,
         "regenerate_prompt",
@@ -3805,6 +3900,11 @@ async def retry_task_assets(task_id: str, response: Response, payload: dict = Bo
         requested_scope,
         payload.get("targets"),
     )
+    from src.text.storyboard_director import load_plan, planning_blocked
+    candidate = load_plan(task_id) or {}
+    if (any(target.get("asset_type") == "image" for target in targets)
+            and candidate.get("review_required") and planning_blocked(candidate)):
+        raise HTTPException(409, "分镜尚未通过审查，请先审查并修正；已有素材保留")
     active = mysql_client.get_active_task_operation(task_id)
     if active:
         requested_keys = {
@@ -4380,7 +4480,8 @@ def _render_legacy_preview(task_id, segment_index, job_id):
         mode = "segment"
 
     segment_texts = [seg.get("text") or "" for seg in selected]
-    media_paths = [seg.get("image_path") for seg in selected]
+    from src.media.shot_video_jobs import matching_video_path
+    media_paths = [matching_video_path(task_id, seg) or seg.get("image_path") for seg in selected]
     voiceover_files = [seg.get("audio_path") for seg in selected]
 
     missing = [path for path in media_paths if not path or not Path(path).exists()]
@@ -5080,6 +5181,10 @@ async def update_segment(
         raise HTTPException(status_code=409, detail="预案已在其他页面更新，请刷新后重试")
     if next_version is None:
         raise HTTPException(status_code=500, detail="更新段落失败")
+    if ((text is not None and text != current.get("text"))
+            or (image_prompt is not None and image_prompt != (current.get("image_prompt") or ""))):
+        from src.text.storyboard_director import invalidate_review
+        invalidate_review(task_id, index=segment_index, image_prompt=image_prompt, text=text)
     task_manager.invalidate_task_cache(task_id)
     refreshed = mysql_client.get_task(task_id) or {}
     refreshed_segments = mysql_client.get_segments(task_id)

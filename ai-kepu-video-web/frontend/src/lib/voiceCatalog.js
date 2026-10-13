@@ -34,10 +34,10 @@ export function speedLevelAtPosition(position) {
 
 function canonicalVoiceId(voice = {}) {
   const current = String(voice.id || '').trim()
-  if (current.startsWith('mimo:') || current.startsWith('doubao:') || current.startsWith('mimo-clone:')) {
+  if (current === 'silent:default' || current.startsWith('mimo:') || current.startsWith('doubao:') || current.startsWith('mimo-clone:')) {
     return current
   }
-  const provider = voice.provider === 'doubao' ? 'doubao' : 'mimo'
+  const provider = voice.provider === 'silent' ? 'silent' : voice.provider === 'doubao' ? 'doubao' : 'mimo'
   const voiceId = String(voice.voice_id || current).trim()
   if (!voiceId) return ''
   return voice.kind === 'clone' ? `mimo-clone:${voiceId}` : `${provider}:${voiceId}`
@@ -46,7 +46,7 @@ function canonicalVoiceId(voice = {}) {
 export function normalizeVoiceCatalog(input) {
   if (!Array.isArray(input)) return []
   return input.map((voice, index) => {
-    const provider = voice?.provider === 'doubao' ? 'doubao' : 'mimo'
+    const provider = voice?.provider === 'silent' ? 'silent' : voice?.provider === 'doubao' ? 'doubao' : 'mimo'
     const kind = voice?.kind === 'clone' ? 'clone' : 'preset'
     const id = canonicalVoiceId({ ...voice, provider, kind })
     const status = voice?.status || 'ready'
@@ -69,9 +69,9 @@ export function normalizeVoiceCatalog(input) {
 
 export function groupVisibleVoices(voices, { includeUnavailable = false } = {}) {
   const source = normalizeVoiceCatalog(voices)
-  return ['mimo', 'doubao'].map(provider => ({
+  return ['silent', 'mimo', 'doubao'].map(provider => ({
     provider,
-    label: provider === 'mimo' ? '小米 MiMo' : '豆包 TTS',
+    label: provider === 'silent' ? '本地无旁白（零 TTS 费用）' : provider === 'mimo' ? '小米 MiMo' : '豆包 TTS',
     voices: source.filter(voice => (
       voice.provider === provider && (includeUnavailable || voice.selectable)
     )),
@@ -159,11 +159,11 @@ export function mergeTtsOptions(base = {}, override = {}, provider = 'mimo') {
 export function buildVoiceTaskPayload(voiceType, options = {}, inherited = {}) {
   const id = canonicalVoiceId({
     id: voiceType,
-    provider: String(voiceType || '').startsWith('doubao:') ? 'doubao' : 'mimo',
+    provider: String(voiceType || '').startsWith('silent:') ? 'silent' : String(voiceType || '').startsWith('doubao:') ? 'doubao' : 'mimo',
     kind: String(voiceType || '').startsWith('mimo-clone:') ? 'clone' : 'preset',
   })
   if (!id) return { voice_type: null, tts_options: {} }
-  const provider = id.startsWith('doubao:') ? 'doubao' : 'mimo'
+  const provider = id.startsWith('silent:') ? 'silent' : id.startsWith('doubao:') ? 'doubao' : 'mimo'
   return {
     voice_type: id,
     tts_options: mergeTtsOptions(inherited, options, provider),

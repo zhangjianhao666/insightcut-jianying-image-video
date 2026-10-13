@@ -55,11 +55,15 @@ class GeneratedImagePath(str):
         requested_prompt: str,
         submitted_prompt: str,
         fallback_used: bool,
+        generation_metadata: dict = None,
+        director_prompt: str = None,
     ):
         value = super().__new__(cls, path)
         value.requested_prompt = requested_prompt
         value.submitted_prompt = submitted_prompt
         value.fallback_used = bool(fallback_used)
+        value.generation_metadata = generation_metadata or {}
+        value.director_prompt = director_prompt
         return value
 
 
@@ -70,6 +74,7 @@ class ImageGenerator:
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.image_config = Config.image_config()
+        self.provider = str(self.image_config.get("provider") or "agnes").lower()
         self.api_url = self.image_config.get("api_url") or Config.SEEDREAM_API_URL
         self.api_key = self.image_config.get("api_key") or Config.SEEDREAM_API_KEY
         self.model = self.image_config.get("model") or Config.SEEDREAM_MODEL
@@ -107,11 +112,89 @@ class ImageGenerator:
         output_stem = filename or f"segment_{index:03d}_{uuid.uuid4().hex}"
 
         # 组合 prompt + 风格
-        suffix = (style_suffix or "").strip() or STYLE_PRESETS.get(style, STYLE_PRESETS["写实风格"])
+        suffix = (style_suffix or "").strip() or STYLE_PRESETS.get(style, str(style or "").strip() or STYLE_PRESETS["写实风格"])
         full_prompt = f"{prompt}, {suffix}"
+
+        direction = {}
+        plan = {}
+        task_id = getattr(self, "project_task_id", None)
+        if task_id:
+            from src.text.storyboard_director import load_plan, lookup_shot, planning_blocked
+            from src.database import mysql_client
+            plan = load_plan(task_id) or {}
+            if plan.get("review_required") and planning_blocked(plan):
+                raise ValueError("导演分镜尚未通过审查，已有素材已保留，请审查后再生成图片")
+            segment = next((s for s in mysql_client.get_segments(task_id) if s["segment_index"] == index), None)
+            direction = lookup_shot(task_id, index, (segment or {}).get("text"))
+            if plan.get("review_required"):
+                from src.text.image_contract import MARKER
+                base_prompt = str(prompt or "").split(MARKER, 1)[0].split(". PROJECT-WIDE VISUAL CONTINUITY:", 1)[0].strip()
+                if not segment or not direction or base_prompt != str(direction.get("image_prompt") or "").strip():
+                    raise ValueError("当前图片描述或旁白与已审查分镜不一致，请先重新审查")
+        from src.text.image_contract import compile_shot
+        contract = compile_shot(prompt, plan.get("visual_bible") or {}, shot=direction) if direction else None
+        if contract:
+            full_prompt = f"{contract['prompt']}, {suffix}"
+        reference = getattr(self, "reference_image", None)
+        if contract and not contract["reference_policy"]["character"]:
+            reference = None
+        scene_reference = None
+        if contract and contract["reference_policy"]["scene"] and task_id:
+            from src.media.h3_references import scene_image
+            scene_reference = scene_image(task_id, direction.get("scene_id"))
+        import hashlib
+        references = {kind: hashlib.sha256(Path(path).read_bytes()).hexdigest()
+                      for kind, path in [("character", reference), ("scene", scene_reference)] if path}
+        metadata = {"visual_contract": contract, "reference_hashes": references} if contract else {}
+        limit = 1500 if self.provider == "minimax" else 5000
+        if self.provider in {"wan", "minimax"} and len(full_prompt) > limit:
+            raise ValueError("完整图片提示词超过模型上限，需由导演精简，禁止截断")
 
         if not self.api_key:
             raise ValueError("图像生成 API Key 未配置")
+
+        if self.provider == "minimax":
+            if scene_reference:
+                raise ValueError("当前 MiniMax 生图适配不支持同时提交人物和场景参考，请使用万相")
+            from src.media.minimax_image import MiniMaxImageGenerator
+            client = MiniMaxImageGenerator(self.api_key, self.api_url, self.model)
+            path = client.generate(full_prompt, width, height, self.output_dir / f"{output_stem}.png",
+                                   reference_image=reference)
+            return GeneratedImagePath(path, requested_prompt=full_prompt, submitted_prompt=full_prompt, fallback_used=False, generation_metadata=metadata, director_prompt=contract["prompt"] if contract else None)
+
+        if self.provider == "wan":
+            # Wan uses a different response schema than OpenAI images/generations.
+            # Keep the existing GeneratedImagePath contract and all downstream
+            # asset versioning intact.
+            from src.media.wan_image import WanImageGenerator, image_size
+            size = image_size(width, height, self.size)
+            try:
+                self._wait_for_rate_limit()
+                client = WanImageGenerator(
+                    api_key=self.api_key, base_url=self.api_url, model=self.model
+                )
+                output_path = self.output_dir / f"{output_stem}.png"
+                reference_args = {}
+                if reference:
+                    reference_args["reference_image"] = reference
+                if scene_reference:
+                    reference_args["scene_reference"] = scene_reference
+                path = client.generate(full_prompt, size, str(output_path), **reference_args)
+                if getattr(client, "receipt", None):
+                    metadata.update(provider_receipt=client.receipt)
+            except Exception as error:
+                safe = classify_exception(error, provider="wan")
+                if safe.code is ErrorCode.UNKNOWN:
+                    safe = make_safe_error(ErrorCode.PROVIDER_ERROR, provider="wan")
+                raise ClassifiedError(safe) from None
+            return GeneratedImagePath(
+                str(path),
+                requested_prompt=full_prompt,
+                submitted_prompt=getattr(client, "submitted_prompt", full_prompt),
+                fallback_used=False,
+                generation_metadata=metadata,
+                director_prompt=contract["prompt"] if contract else None,
+            )
 
         # 尺寸映射（可配置，auto 时按宽高比选择常见兼容规格）
         size = self._pick_size(width, height)
@@ -197,6 +280,8 @@ class ImageGenerator:
             requested_prompt=full_prompt,
             submitted_prompt=str(payload["prompt"]),
             fallback_used=fallback_used,
+            generation_metadata={**metadata, "reference_hashes": {}},
+            director_prompt=contract["prompt"] if contract else None,
         )
 
     @staticmethod

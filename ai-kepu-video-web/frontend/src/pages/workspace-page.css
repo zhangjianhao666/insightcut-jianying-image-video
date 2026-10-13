@@ -1154,3 +1154,81 @@ button.workspace-preview-row:hover { background: var(--color-accent-soft); }
 .workspace-conflicts button { margin: .3rem; }
 
 .workspace-sync-row button.workspace-save-retry, .workspace-sync-row button.workspace-plan-restore { display: inline-flex; }
+
+/* Real-motion-first output: stays visible above the picture/voice editor. */
+.video-first-panel {
+  margin: 10px 16px 12px;
+  padding: 16px 18px;
+  background: var(--color-surface-raised);
+  border: 1px solid var(--color-border);
+  border-radius: 14px;
+  display: grid;
+  gap: 12px;
+}
+.video-first-panel header { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; align-items: center; }
+.video-first-panel header div { display: grid; gap: 3px; }
+.video-first-panel header strong { font-size: 16px; }
+.video-first-panel header small, .video-first-help { color: var(--color-ink-muted); }
+.video-first-status, .video-first-complete { font-size: 12px; font-weight: 600; }
+.video-first-complete { color: var(--color-success); }
+.video-first-summary { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--color-ink-muted); }
+.video-first-panel progress { width: 100%; }
+.video-first-shot-status { display: flex; flex-wrap: wrap; gap: 7px; }
+.video-first-shot-status span {
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 4px 8px;
+  font-size: 11px;
+}
+.video-first-actions { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+.video-first-actions label { display: flex; align-items: center; gap: 7px; font-size: 12px; }
+.video-first-actions select { padding: 6px; border-radius: 6px; }
+.video-first-output { display: grid; gap: 10px; max-width: 700px; }
+.video-first-output video { width: 100%; max-height: 380px; background: var(--color-ink); border-radius: 8px; }
+.video-first-output a { color: var(--color-accent); font-weight: 700; }
+@media (max-width: 720px) { .video-first-panel { margin: 8px; padding: 12px; } }
+
+/* Continuity review belongs to the video-first producer, not to static image export. */
+.video-first-continuity {
+  padding: 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: var(--color-surface);
+  font-size: 12px;
+}
+.video-first-continuity > summary {
+  cursor: pointer;
+  font-weight: 700;
+}
+.video-first-continuity > p,
+.video-first-continuity li {
+  line-height: 1.55;
+  color: var(--color-ink-muted);
+}
+.video-first-continuity-shot {
+  margin: 8px 0;
+  padding: 8px 12px;
+  border-left: 2px solid var(--color-accent);
+  background: var(--color-surface-raised);
+}
+.video-first-continuity-shot p { margin: 5px 0 0; }
+
+/* H3 reference mode is an opt-in, local-only control under Video-first. */
+.h3-reference-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 10px;
+  margin: 10px 0;
+}
+.h3-reference-item {
+  display: grid;
+  gap: 7px;
+  padding: 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 9px;
+  background: var(--color-surface-raised);
+  min-width: 0;
+}
+.h3-reference-item input[type="file"] { max-width: 100%; }
+.h3-reference-item span { color: var(--color-ink-muted); }
+.h3-reference-item button { justify-self: start; }

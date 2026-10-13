@@ -1,0 +1,139 @@
+"""Optional paid AI video generation for one saved storyboard image."""
+import asyncio
+from pathlib import Path
+
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import FileResponse
+from pydantic import BaseModel, Field
+
+from src.database import mysql_client
+from src.media import h3_references, shot_video_jobs
+from src.text.storyboard_director import load_plan, lookup_shot, planning_blocked
+from src.text.native_dialogue import compile_video_prompt
+from src.text.continuity import compose_motion_prompt
+from src.media.minimax_i2v import MinimaxVideoError
+from src.media.wan_i2v import WanVideoError
+
+router = APIRouter(prefix="/ai/native/video/kepu", tags=["shot-video"])
+
+
+class CreateShotVideo(BaseModel):
+    prompt: str = Field(..., min_length=1, max_length=1800)
+    duration: int | None = Field(default=None, ge=2, le=15)
+    force_new: bool = False
+
+
+def _segment(task_id: str, index: int) -> dict:
+    if not mysql_client.get_task(task_id):
+        raise HTTPException(404, "项目不存在")
+    segment = next(
+        (s for s in mysql_client.get_segments(task_id) if int(s["segment_index"]) == index),
+        None,
+    )
+    if segment is None:
+        raise HTTPException(404, "分镜不存在")
+    if not segment.get("image_path") or not Path(segment["image_path"]).is_file():
+        raise HTTPException(409, "请先生成本分镜首帧图片")
+    return segment
+
+
+def _candidate_direction(task_id, index, text):
+    direction = lookup_shot(task_id, index, text)
+    plan = load_plan(task_id) or {}
+    narration = plan.get("segments") or []
+    if not direction and planning_blocked(plan) and index < len(narration) and narration[index] == text:
+        direction = (plan.get("shots") or {}).get(str(index)) or {}
+    return direction
+
+
+def _view(task_id: str, index: int, segment: dict, request: Request) -> dict:
+    item = shot_video_jobs.status(task_id, index, segment.get("image_path"))
+    state = item.get("status", "not_generated")
+    current_shot = _candidate_direction(task_id, index, segment.get("text") or "")
+    try:
+        fingerprint = h3_references.fingerprint_now(
+            task_id, segment.get("image_path"), current_shot.get("scene_id") or "",
+        )
+    except (OSError, ValueError):
+        fingerprint = "invalid"
+    if state == "completed" and item.get("reference_fingerprint", "first_frame") != fingerprint:
+        state = "stale"
+    # Never expose internal provider URLs or filesystem paths to the browser.
+    return {
+        "status": state,
+        "duration": item.get("duration"),
+        "duration_options": list(shot_video_jobs.duration_options()),
+        "default_duration": shot_video_jobs.default_duration(),
+        "video_provider": shot_video_jobs.video_provider(),
+        "reference_mode": h3_references.mode(task_id),
+        "prompt": item.get("prompt"),
+        "video_url": str(request.url_for("get_shot_video_file", task_id=task_id, segment_index=index))
+                     if state == "completed" else None,
+        "has_audio": bool(item.get("has_audio")),
+        "has_saved_task": bool(item.get("provider_task_id")),
+        "error": item.get("error") if state in {"failed", "interrupted"} else None,
+    }
+
+
+@router.get("/tasks/{task_id}/segments/{segment_index}/video")
+async def get_shot_video_status(task_id: str, segment_index: int, request: Request):
+    segment = await asyncio.to_thread(_segment, task_id, segment_index)
+    return _view(task_id, segment_index, segment, request)
+
+
+@router.post("/tasks/{task_id}/segments/{segment_index}/video", status_code=202)
+async def generate_shot_video(
+    task_id: str, segment_index: int, data: CreateShotVideo, request: Request,
+):
+    segment = await asyncio.to_thread(_segment, task_id, segment_index)
+    # Explicit action starts a paid call. No automatic dispatch from project confirmation.
+    if data.force_new and shot_video_jobs.status(task_id, segment_index).get("status") == "running":
+        raise HTTPException(409, "当前分镜已有生成任务")
+    direction = _candidate_direction(task_id, segment_index, segment.get("text") or "")
+    composed_prompt = (
+        compose_motion_prompt(load_plan(task_id) or {}, segment_index, data.prompt)
+        if direction else data.prompt
+    )
+    try:
+        references = await asyncio.to_thread(
+            h3_references.for_shot, task_id, segment["image_path"],
+            direction.get("scene_id") or "",
+        )
+        composed_prompt = compile_video_prompt(
+            task_id, segment.get("text"), composed_prompt, references, shot_video_jobs._video_config(),
+        )
+        kwargs = {"duration": data.duration, "force_new": data.force_new}
+        if references is not None:
+            kwargs["reference_assets"] = references
+        await asyncio.to_thread(
+            shot_video_jobs.start, task_id, segment_index,
+            segment["image_path"], composed_prompt, **kwargs,
+        )
+    except (ValueError, OSError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except (WanVideoError, MinimaxVideoError) as exc:
+        # Carry the provider's sanitised reason (bad key, quota, sensitive
+        # prompt) instead of hiding it behind a generic message.
+        raise HTTPException(503, str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(503, "无法启动视频生成任务，请检查视频模型配置和 API Key") from exc
+    return _view(task_id, segment_index, segment, request)
+
+
+@router.get("/tasks/{task_id}/segments/{segment_index}/video/file", name="get_shot_video_file")
+async def get_shot_video_file(task_id: str, segment_index: int):
+    segment = await asyncio.to_thread(_segment, task_id, segment_index)
+    path = shot_video_jobs.matching_video_path(task_id, segment)
+    shot = _candidate_direction(task_id, segment_index, segment.get("text") or "")
+    stored = shot_video_jobs.status(task_id, segment_index, segment.get("image_path"))
+    try:
+        current = h3_references.fingerprint_now(
+            task_id, segment["image_path"], shot.get("scene_id") or "",
+        )
+    except (OSError, ValueError):
+        current = "invalid"
+    if stored.get("reference_fingerprint", "first_frame") != current:
+        path = None
+    if not path:
+        raise HTTPException(404, "可用的视频片段不存在")
+    return FileResponse(path, media_type="video/mp4")

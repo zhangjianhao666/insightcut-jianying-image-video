@@ -233,13 +233,13 @@ def test_prompt_route_is_idempotent_and_conflicts_with_other_target(
     first_response = Response()
     first = asyncio.run(
         routes.regenerate_segment_prompt(
-            "prompt-route", 0, first_response, {"snapshot_key": snapshot}
+            "prompt-route", 0, first_response, {"snapshot_key": snapshot, "feedback": "只拍豆子，不要人物"}
         )
     )
     duplicate_response = Response()
     duplicate = asyncio.run(
         routes.regenerate_segment_prompt(
-            "prompt-route", 0, duplicate_response, {"snapshot_key": snapshot}
+            "prompt-route", 0, duplicate_response, {"snapshot_key": snapshot, "feedback": "只拍豆子，不要人物"}
         )
     )
 
@@ -247,11 +247,12 @@ def test_prompt_route_is_idempotent_and_conflicts_with_other_target(
     assert duplicate_response.status_code == 200
     assert first["operation_id"] == duplicate["operation_id"]
     assert len(starts) == 1
+    assert starts[0][2]["feedback"] == "只拍豆子，不要人物"
 
     with pytest.raises(HTTPException) as exc_info:
         asyncio.run(
             routes.regenerate_segment_prompt(
-                "prompt-route", 1, Response(), {"snapshot_key": snapshot}
+                "prompt-route", 1, Response(), {"snapshot_key": snapshot, "feedback": "只拍豆子，不要人物"}
             )
         )
     assert exc_info.value.status_code == 409
@@ -267,6 +268,14 @@ def test_prompt_route_is_idempotent_and_conflicts_with_other_target(
     assert stale_exc.value.detail["code"] == "conflict"
     assert len(starts) == 1
 
+
+    for feedback in [None, 12, "x" * 2001]:
+        with pytest.raises(HTTPException) as invalid:
+            asyncio.run(routes.regenerate_segment_prompt("prompt-route", 0, Response(), {"snapshot_key": snapshot, "feedback": feedback}))
+        assert invalid.value.status_code == 422
+    with pytest.raises(HTTPException) as changed:
+        asyncio.run(routes.regenerate_segment_prompt("prompt-route", 0, Response(), {"snapshot_key": snapshot, "feedback": "不同纠错"}))
+    assert changed.value.status_code == 409
 
 def test_orphaned_prompt_operation_becomes_retryable_without_touching_media(
     tmp_path, temp_db
@@ -569,3 +578,42 @@ def test_legacy_regenerate_image_delegates_to_one_exact_asset_target(
         "error": None,
         "version": temp_db.get_segments(task_id)[0]["updated_at"],
     }]
+
+
+@pytest.mark.parametrize('conflict', [False, True])
+def test_feedback_regeneration_updates_director_only_after_versioned_save(temp_db, tmp_path, monkeypatch, conflict):
+    from src.text import storyboard_director as director
+    from src.config import Config
+    task_id = 'feedback-plan'
+    _create_review_task(temp_db, task_id)
+    temp_db.save_segments(task_id, [{'segment_index': 0, 'text': '鹰嘴豆', 'image_prompt': 'old prompt', 'prompt_status': 'completed'}])
+    monkeypatch.setattr(Config, 'BASE_DIR', tmp_path)
+    direction = {'image_prompt': 'Macro chickpeas only', 'camera': 'extreme close-up',
+                 'visual_contract': {'subject_mode': 'object', 'framing': 'extreme_close_up', 'text_policy': 'forbidden'}}
+    plan = {'version': director._PLAN_VERSION, 'status': 'completed', 'segments': ['鹰嘴豆'],
+            'visual_bible': {'character_lock': 'Full presenter blue apron', 'art_direction': 'flat cartoon'},
+            'shots': {'0': direction}}
+    director._write(task_id, plan)
+    before = director._location(task_id).read_bytes()
+    task = temp_db.get_task(task_id)
+    target = {'segment_index': 0, 'asset_type': 'prompt', 'mode': 'regenerate',
+              'plan_version': int(task.get('plan_version') or 0), 'feedback': '只拍豆子，不要人物'}
+    operation = temp_db.create_task_operation(task_id, 'regenerate_prompt', 'feedback-key', 'snapshot', [target])['operation']
+    monkeypatch.setattr(task_executor_module, 'db_client', temp_db)
+    monkeypatch.setattr(task_executor_module, 'task_manager', SimpleNamespace(invalidate_task_cache=lambda _: None))
+    monkeypatch.chdir(tmp_path)
+    if conflict:
+        monkeypatch.setattr(temp_db, 'update_segment_plan', lambda *args, **kwargs: -1)
+    PromptOnlyPipeline.instances.clear()
+    TaskExecutor(pipeline_factory=PromptOnlyPipeline)._run_prompt_regeneration(task_id, operation['operation_id'], target)
+    called = PromptOnlyPipeline.instances[-1].image_prompt_agent.calls[0]
+    assert called['shot_direction'] == direction
+    assert called['feedback'] == target['feedback']
+    if conflict:
+        assert director._location(task_id).read_bytes() == before
+        assert temp_db.get_task_operation(operation['operation_id'])['state'] == 'failed'
+    else:
+        saved = temp_db.get_segments(task_id)[0]['image_prompt']
+        assert director.lookup_shot(task_id, 0, '鹰嘴豆')['image_prompt'] == saved
+        assert 'Subject mode: object' in saved
+        assert 'Full presenter blue apron' not in saved

@@ -115,13 +115,16 @@ def _asset_snapshot_json(
 
 def _accepted_image_prompt(path: Any, fallback: str) -> str:
     """Use the exact provider-accepted prompt when the adapter supplied it."""
+    if not bool(getattr(path, "fallback_used", False)) and getattr(path, "director_prompt", None):
+        return str(path.director_prompt)
     value = getattr(path, "submitted_prompt", None)
     return str(value or fallback or "")
 
 
 def _image_generation_metadata(path: Any) -> Optional[str]:
+    metadata = getattr(path, "generation_metadata", {})
     if not bool(getattr(path, "fallback_used", False)):
-        return None
+        return json.dumps({**metadata, "submitted_prompt": str(getattr(path, "submitted_prompt", "") or "")}, ensure_ascii=False, sort_keys=True) if metadata else None
     return json.dumps(
         {
             "content_policy_fallback": True,
@@ -273,6 +276,17 @@ def build_resume_work(segments: List[dict]) -> ResumeWork:
         media_paths=media_paths,
         voiceover_files=voiceover_files,
     )
+
+
+def _attach_ip_reference(task_id: str, pipeline) -> None:
+    """Pin the project's selected reference image to project image generation."""
+    from src.text.ip_library import project_ip
+    profile = project_ip(task_id)
+    image_generator = getattr(pipeline, "image_generator", None)
+    if image_generator:
+        image_generator.project_task_id = task_id
+    if image_generator and profile and profile.get("reference_image"):
+        image_generator.reference_image = profile["reference_image"]
 
 
 def _safe_project_name(name: str) -> str:
@@ -838,6 +852,7 @@ class TaskExecutor:
             subtitle_options=_task_subtitle_options(task_row),
             generation_options=_task_generation_options(task_row),
         )
+        _attach_ip_reference(task_id, pipeline)
         if cancellation and getattr(pipeline, "image_generator", None):
             pipeline.image_generator.on_provider_wait = cancellation.provider_wait
             pipeline.image_generator.cancellation = cancellation
@@ -850,15 +865,36 @@ class TaskExecutor:
                 or task_row.get("theme")
                 or ""
             )[:500]
+            from src.text.storyboard_director import load_plan
+            visual_plan = load_plan(task_id) or {}
+            direction = (visual_plan.get("shots") or {}).get(str(index)) or {}
+            planned_segments = visual_plan.get("segments") or []
+            if index >= len(planned_segments) or planned_segments[index] != (segment.get("text") or ""):
+                direction = {}
+            segment_position = next(
+                (i for i, row in enumerate(segments)
+                 if int(row.get("segment_index")) == index), 0
+            )
             prompt = pipeline.image_prompt_agent.generate_prompt(
                 segment_text=segment.get("text") or "",
                 summary=summary,
                 style=visual_style_suffix or visual_style,
                 aspect_ratio=ratio,
+                **({"shot_direction": direction} if direction else {}),
+                **({"feedback": target.get("feedback")} if target.get("feedback") else {}),
+                **({
+                    "visual_bible": visual_plan.get("visual_bible"),
+                    "previous_segment": segments[segment_position - 1].get("text", "") if segment_position else "",
+                    "next_segment": segments[segment_position + 1].get("text", "") if segment_position + 1 < len(segments) else "",
+                } if visual_plan.get("visual_bible") else {}),
             )
             if cancellation:
                 cancellation.raise_if_cancelled()
-            prompt = str(prompt or "").strip()
+            from src.text.storyboard_director import enforce_visual_consistency
+            prompt = enforce_visual_consistency(
+                str(prompt or "").strip(), visual_plan.get("visual_bible") or {},
+                shot=direction or None
+            )
             if not prompt:
                 raise RuntimeError("提示词生成结果为空")
             resolved_image = _resolve_local_path(segment.get("image_path"))
@@ -888,6 +924,19 @@ class TaskExecutor:
                 )
             if next_version is None:
                 raise RecoverableTaskError("提示词保存失败")
+
+            if direction:
+                # The task runtime lock excludes other plan writers. Publish the
+                # corrected prompt only after the versioned database save wins.
+                from src.text.storyboard_director import _write
+                current_plan = load_plan(task_id) or {}
+                if current_plan != visual_plan:
+                    raise RecoverableTaskError(
+                        "导演规划已发生变化，请刷新后重试",
+                        make_safe_error(ErrorCode.CONFLICT),
+                    )
+                current_plan["shots"][str(index)]["image_prompt"] = prompt
+                _write(task_id, current_plan)
 
             refreshed = db_client.get_segments(task_id)
             all_prompts_ready = bool(refreshed) and all(
@@ -1120,6 +1169,7 @@ class TaskExecutor:
             subtitle_options=_task_subtitle_options(task_row),
             generation_options=_task_generation_options(task_row),
         )
+        _attach_ip_reference(task_id, pipeline)
         if cancellation and getattr(pipeline, "image_generator", None):
             pipeline.image_generator.on_provider_wait = cancellation.provider_wait
             pipeline.image_generator.cancellation = cancellation
@@ -1142,6 +1192,10 @@ class TaskExecutor:
             segment = by_index[index]
             stamp = uuid.uuid4().hex
             if target["asset_type"] == "image":
+                from src.text.storyboard_director import load_plan, planning_blocked
+                candidate = load_plan(task_id) or {}
+                if candidate.get("review_required") and planning_blocked(candidate):
+                    raise ValueError("分镜尚未通过审查，请先审查并修正；已有素材保留")
                 prompt = str(segment.get("image_prompt") or "").strip()
                 if not prompt:
                     raise ValueError("图片缺少提示词，不能直接重试")
@@ -1609,6 +1663,7 @@ class TaskExecutor:
                 subtitle_options=_task_subtitle_options(task_row),
                 generation_options=_task_generation_options(task_row),
             )
+            _attach_ip_reference(task_id, pipeline)
             if cancellation and getattr(pipeline, "image_generator", None):
                 pipeline.image_generator.on_provider_wait = cancellation.provider_wait
                 pipeline.image_generator.cancellation = cancellation
@@ -1814,6 +1869,7 @@ class TaskExecutor:
                 subtitle_options=_task_subtitle_options(task_row),
                 generation_options=_task_generation_options(task_row),
             )
+            _attach_ip_reference(task_id, pipeline)
             if cancellation and getattr(pipeline, "image_generator", None):
                 pipeline.image_generator.on_provider_wait = cancellation.provider_wait
                 pipeline.image_generator.cancellation = cancellation
@@ -1853,11 +1909,14 @@ class TaskExecutor:
                     "原文脚本检查点",
                 )
             else:
+                from src.text.ip_library import project_ip
+                ip_profile = project_ip(task_id)
                 rewrite_result = pipeline.script_rewriter.rewrite(
                     theme,
                     style=text_style,
                     target_length=length,
                     input_mode=input_mode,
+                    **({"ip_profile": ip_profile} if ip_profile else {}),
                 )
                 pipeline.article = rewrite_result["script"]
                 pipeline.summary = rewrite_result["summary"]
@@ -1877,14 +1936,29 @@ class TaskExecutor:
             if cancellation:
                 cancellation.raise_if_cancelled()
 
-            # 步骤 2: 短节奏分段，约 20 字一段，对应更密的画面切换
+            director_outline = None
+            from src.media.minimax_i2v import is_h3_model
+            video_config = Config.load_model_config().get("video") or {}
+            native_director = (task_row.get("execution_mode") == "review_first"
+                               and video_config.get("provider") == "minimax"
+                               and is_h3_model(video_config.get("model")))
+            # H3 narration shots are semantic director decisions, not subtitle chunks.
             logger.info(f"[{task_id}] [2/6] 开始短节奏分段...")
             task.current_step = "segmentation"
             db_client.update_task_status(task_id, "processing", "segmentation")
             if persisted_segments:
                 pipeline.segments = [row["text"] for row in persisted_segments]
             else:
-                pipeline.segments = pipeline.text_segmenter.split(pipeline.article)
+                if native_director:
+                    from src.text.storyboard_director import direct_segments, save_director_outline
+                    director_outline = direct_segments(
+                        pipeline.article_generator, pipeline.article,
+                        target_duration=_task_generation_options(task_row).get("target_duration_seconds"),
+                    )
+                    save_director_outline(task_id, director_outline)
+                    pipeline.segments = [item["text"] for item in director_outline]
+                else:
+                    pipeline.segments = pipeline.text_segmenter.split(pipeline.article)
                 initial_segments = [
                     {
                         "segment_index": i,
@@ -1930,18 +2004,47 @@ class TaskExecutor:
             task.start_step("image_prompt_generation")
             resume_work = build_resume_work(persisted_segments)
             image_prompts = [row.get("image_prompt") or "" for row in persisted_segments]
+            planned_shots = {}
+            visual_bible = {}
+            if resume_work.prompt_indexes and getattr(pipeline, "article_generator", None):
+                from src.text.storyboard_director import plan_storyboard
+                plan = plan_storyboard(
+                    task_id, pipeline.article_generator,
+                    script=pipeline.article,
+                    segments=pipeline.segments,
+                    summary=pipeline.summary,
+                    style=visual_prompt_style,
+                    ratio=ratio,
+                    outline=director_outline,
+                    target_duration=_task_generation_options(task_row).get("target_duration_seconds") if native_director else None,
+                    review_required=native_director,
+                    cancel_check=cancellation.raise_if_cancelled if cancellation else None,
+                    brief=str(task_row.get("original_input") or task_row.get("theme") or ""),
+                )
+                if native_director and (plan.get("status") == "failed" or len(plan.get("shots") or {}) != len(pipeline.segments)):
+                    raise ValueError("导演逐镜规划未完成；预案已保留，请重新规划")
+                planned_shots = plan.get("shots") or {}
+                visual_bible = plan.get("visual_bible") or {}
 
             def generate_prompt_item(i: int):
                 if cancellation:
                     cancellation.raise_if_cancelled()
                 seg = pipeline.segments[i]
                 try:
-                    prompt = pipeline.image_prompt_agent.generate_prompt(
-                        segment_text=seg,
-                        summary=pipeline.summary,
-                        style=visual_prompt_style,
-                        aspect_ratio=ratio,
-                    )
+                    planned = planned_shots.get(str(i)) or {}
+                    prompt = str(planned.get("image_prompt") or "").strip()
+                    if not prompt:
+                        prompt = pipeline.image_prompt_agent.generate_prompt(
+                            segment_text=seg,
+                            summary=pipeline.summary,
+                            style=visual_prompt_style,
+                            aspect_ratio=ratio,
+                            visual_bible=visual_bible,
+                            previous_segment=pipeline.segments[i - 1] if i else "",
+                            next_segment=pipeline.segments[i + 1] if i + 1 < segments_count else "",
+                        )
+                    from src.text.storyboard_director import enforce_visual_consistency
+                    prompt = enforce_visual_consistency(prompt, visual_bible, shot=planned)
                     return {"status": "success", "prompt": prompt, "error": None}
                 except TaskCancelled:
                     raise
@@ -2229,6 +2332,10 @@ class TaskExecutor:
                 try:
                     if cancellation:
                         cancellation.raise_if_cancelled()
+                    from src.text.storyboard_director import load_plan, planning_blocked
+                    candidate = load_plan(task_id) or {}
+                    if candidate.get("review_required") and planning_blocked(candidate):
+                        raise ValueError("分镜尚未通过审查，请先审查并修正；已有素材保留")
                     path = pipeline.image_generator.generate(
                         prompt,
                         index=i,

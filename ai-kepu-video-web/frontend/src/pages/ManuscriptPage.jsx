@@ -7,9 +7,10 @@ import { createBatch, createTask, extractDocumentText, getConfigReadiness, listP
 import { Modal } from '../components/Modal'
 import { EmptyStateCard } from '../components/ui/EmptyStateCard'
 import { VisualStyleCard } from '../components/ui/VisualStyleCard'
+import { IpProfilePicker } from '../components/IpProfilePicker'
 import { toast } from '../lib/toast'
 import { selectProject } from '../lib/projectSelection'
-import { createDraft, estimateDuration, estimateSegments, getDraft, getLatestDraft, ratioOptions, saveDraft, textStyles, visualStyles } from '../utils/projectDrafts'
+import { buildVideoStyle, createDraft, CUSTOM_STYLE_EXAMPLE, CUSTOM_VISUAL_STYLE, estimateDuration, estimateSegments, getDraft, getLatestDraft, ratioOptions, saveDraft, textStyles, visualStyles } from '../utils/projectDrafts'
 import './creation-flow.css'
 
 const exampleScript = `1  大脑如何影响我们的决策？\n\n你是否有过这样的经历：明明知道不应该买，却在情绪低落时下单了很多东西？或者明明想要好好休息，却因为一时愤怒做了后悔的决定？\n\n这并不是你不够理智，而是情绪正在悄悄影响着你的大脑。\n\n2  情绪与大脑的关系\n\n研究表明，情绪会影响我们大脑中负责决策的区域，改变我们对风险和收益的判断。\n\n例如，在压力状态下，我们的大脑更倾向于选择即时缓解的方案，而忽略了长期后果。\n\n3  如何做出更好的决策？\n\n觉察情绪，暂停片刻，理性评估，再从过去的决策中复盘学习。`
@@ -164,15 +165,16 @@ export function ManuscriptPage() {
         name: prepared.name,
         theme: String(currentText).slice(0, 5000),
         input_mode: inputMode,
-        style: `${prepared.text_style || '知识科普'}|${prepared.visual_style || '吉卜力'}`,
+        style: buildVideoStyle(prepared),
         ratio: prepared.ratio || '16:9',
         length: inputMode === 'theme' ? normalizeLength(prepared.length) : 0,
-        voice_type: prepared.template_voice_type || voiceType || undefined,
+        voice_type: prepared.silent_video ? 'silent:default' : prepared.template_voice_type || prepared.ip_voice_type || voiceType || undefined,
         tts_options: prepared.template_tts_options || readLastTtsOptions(),
         execution_mode: 'review_first',
         script_policy: inputMode === 'script' ? 'verbatim' : 'rewrite',
         source_draft_id: prepared.draft_id,
         template_id: prepared.template_id || undefined,
+        ip_profile_id: prepared.ip_profile_id || undefined,
         generation_options: prepared.generation_options || undefined,
         subtitle_options: prepared.subtitle_options || undefined,
       })
@@ -192,6 +194,10 @@ export function ManuscriptPage() {
   const continueToProduction = async () => {
     let next = draftRef.current
     if (next.input_mode !== 'theme' && !String(next.manuscript || '').trim()) next = insertExample()
+    if (next.visual_style === CUSTOM_VISUAL_STYLE && !String(next.custom_visual_style || '').trim()) {
+      toast.warning('请填写自定义画面风格描述')
+      return
+    }
     const currentText = next.input_mode === 'theme' ? next.theme : next.manuscript
     if (!String(currentText || '').trim()) {
       toast.warning(next.input_mode === 'theme' ? '请先输入视频主题' : '请先输入文稿内容')
@@ -205,7 +211,7 @@ export function ManuscriptPage() {
     persistDraft(prepared, setDraft, setSaveState, setSavedAt)
     setStarting(true)
     try {
-      const readiness = await getConfigReadiness({ voiceType: prepared.template_voice_type || voiceType, phase: 'planning' })
+      const readiness = await getConfigReadiness({ voiceType: prepared.template_voice_type || prepared.ip_voice_type || voiceType, phase: 'planning' })
       if (readiness?.status === 'not_ready' || readiness?.status === 'unknown') {
         setReadinessPrompt({ ...readiness, pendingLaunch })
         return
@@ -337,9 +343,45 @@ export function ManuscriptPage() {
 
           <section className="manuscript-settings-section" aria-labelledby="visual-preset-heading">
             <header className="manuscript-settings-heading"><span>02</span><h3 id="visual-preset-heading">生产预设</h3></header>
-            <fieldset className="control-group"><legend>画面风格</legend><div className="style-thumbnail-grid">{visualStyles.map(style => <VisualStyleCard key={style.value} style={style} selected={draft.visual_style === style.value} onSelect={value => patchDraft({ visual_style: value })} />)}</div></fieldset>
+            <IpProfilePicker value={draft.ip_profile_id || ''} onChange={(id, profile) => patchDraft({ ip_profile_id: id, ip_voice_type: profile?.voice_type || '' })} />
+            <fieldset className="control-group">
+              <legend>画面风格</legend>
+              <div className="style-thumbnail-grid">
+                {visualStyles.map(style => <VisualStyleCard key={style.value} style={style} selected={draft.visual_style === style.value} onSelect={value => patchDraft({ visual_style: value })} />)}
+              </div>
+              <button type="button" className={`button button-secondary custom-visual-style-toggle ${draft.visual_style === CUSTOM_VISUAL_STYLE ? 'is-selected' : ''}`}
+                aria-pressed={draft.visual_style === CUSTOM_VISUAL_STYLE}
+                onClick={() => patchDraft({
+                  visual_style: CUSTOM_VISUAL_STYLE,
+                  custom_visual_style: draft.custom_visual_style || CUSTOM_STYLE_EXAMPLE,
+                })}>
+                自定义画风（例如 Family Guy 风格）
+              </button>
+              {draft.visual_style === CUSTOM_VISUAL_STYLE ? (
+                <label className="custom-visual-style-field">
+                  <span>自定义视觉描述（会传给 AI 分镜及图片模型）</span>
+                  <textarea
+                    aria-label="自定义画面风格"
+                    value={draft.custom_visual_style || ''}
+                    onChange={event => patchDraft({ custom_visual_style: event.target.value.slice(0, 500) })}
+                    rows={4}
+                    maxLength={500}
+                    placeholder={CUSTOM_STYLE_EXAMPLE}
+                  />
+                  <small>{String(draft.custom_visual_style || '').length}/500 字。建议写清楚线条、配色、人物比例、背景及跨镜头一致性。</small>
+                </label>
+              ) : null}
+            </fieldset>
             <fieldset className="control-group"><legend>视频比例</legend><div className="segmented-control">{ratioOptions.map(ratio => <button type="button" key={ratio} className={draft.ratio === ratio ? 'is-selected' : ''} onClick={() => patchDraft({ ratio })}>{ratio}</button>)}</div></fieldset>
             <label className="field-label">创作风格<select value={draft.text_style || '知识科普'} onChange={event => patchDraft({ text_style: event.target.value })}>{textStyles.map(style => <option key={style}>{style}</option>)}</select></label>
+            <label className="field-label">
+              <span>配音方式</span>
+              <select aria-label="配音方式" value={draft.silent_video ? 'silent' : 'narration'} onChange={event => patchDraft({ silent_video: event.target.value === 'silent' })}>
+                <option value="narration">旧版：图片 + 配音成片（需要 TTS 凭证）</option>
+                <option value="silent">推荐：AI 视频优先（逐镜头图生视频 → 拼接）</option>
+              </select>
+              <small>AI 视频优先不调用 TTS 服务。后端先生成首帧，再将全部分镜生成真正的动态视频；只有全部动态镜头就绪才拼接最终 MP4。</small>
+            </label>
           </section>
 
           <footer className="settings-action-bar">

@@ -19,7 +19,7 @@ class ScriptRewriter:
     def __init__(self, article_generator: Optional[ArticleGenerator] = None):
         self.article_generator = article_generator or ArticleGenerator()
 
-    def rewrite(self, raw_text: str, style: str, target_length: int = None, input_mode: str = None) -> dict:
+    def rewrite(self, raw_text: str, style: str, target_length: int = None, input_mode: str = None, ip_profile: dict = None) -> dict:
         """
         输入用户原始文案，输出改写后的旁白脚本和 50-100 字内容总结。
 
@@ -35,9 +35,12 @@ class ScriptRewriter:
         else:
             prompt = self._rewrite_prompt(raw_text, style)
 
+        if ip_profile:
+            from src.text.ip_library import narration_guidance
+            prompt += "\n\n" + narration_guidance(ip_profile)
         text = self.article_generator._call_api(
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=4096,
+            max_tokens=16384,
         )
         result = self._parse_json(text)
         script = (result.get("script") or "").strip()
@@ -123,56 +126,70 @@ class ImagePromptAgent:
     def __init__(self, article_generator: Optional[ArticleGenerator] = None):
         self.article_generator = article_generator or ArticleGenerator()
 
-    def generate_prompt(self, segment_text: str, summary: str, style: str, aspect_ratio: str = None) -> str:
-        """
-        输入单段文案、全文总结、画面风格和画面比例，输出不超过 30 个英文单词的图片 prompt。
+    def generate_prompt(
+        self, segment_text: str, summary: str, style: str,
+        aspect_ratio: str = None, visual_bible: dict = None,
+        previous_segment: str = "", next_segment: str = "",
+        shot_direction: dict = None, feedback: str = "",
+    ) -> str:
+        """Use full-video art direction and narrative neighbors as context."""
+        if not isinstance(feedback, str) or len(feedback) > 2000:
+            raise ValueError("纠错要求必须是最多 2000 字的文本")
+        if shot_direction:
+            from src.text.image_contract import compile_shot
+            bible_text = compile_shot(
+                shot_direction.get("image_prompt") or segment_text,
+                visual_bible or {}, shot=shot_direction,
+            )["prompt"]
+        else:
+            bible_text = json.dumps(visual_bible or {}, ensure_ascii=False)
+        direction_text = json.dumps(shot_direction or {}, ensure_ascii=False)
+        user_prompt = f"""You are the cinematographer of one continuous educational video.
+Create one English image-generation prompt for the CURRENT narration shot.
 
-        Args:
-            segment_text: 当前段落文案
-            summary: 全文总结
-            style: 视觉风格
-            aspect_ratio: 画面比例，如 "16:9" (横屏), "9:16" (竖屏), "1:1" (方形)
-        """
-        aspect_ratio_line = f"\nAspect ratio: {aspect_ratio}" if aspect_ratio else ""
+Full video summary (story context, not all to be drawn):
+{summary[:550]}
 
-        user_prompt = f"""You are a professional AI image prompt writer.
+Effective visual constraints for this shot (MUST preserve complete rules):
+{bible_text}
 
-Create one concise English image prompt for the current narration segment.
+Approved director shot (subject, shot size and text policy are authoritative):
+{direction_text}
+User correction (apply within the director subject/framing and no-text policy):
+{feedback}
 
-Full video summary:
-{summary}
+Previous narration: {previous_segment[:160]}
+CURRENT narration: {segment_text[:300]}
+Next narration: {next_segment[:160]}
 
-Current narration segment:
-{segment_text}
-
-Visual style constraint:
-{style}{aspect_ratio_line}
+Visual style: {style}
+Aspect ratio: {aspect_ratio or "16:9"}
 
 Requirements:
-- English only
-- 30 words or fewer
-- Describe visible scene, subject, action, setting, mood, and composition
-- Match the composition to the specified aspect ratio
-- No numbering, no explanation, no quotes
-- Do not include text overlays or subtitles"""
+- Describe actual visible subjects, environment, shot size, composition and lighting.
+- Use 35-75 English words, one coherent shot, no explanatory commentary.
+- Keep recurring identities and costumes only when a character is required in this shot.
+- Preserve the director subject and framing; never add a presenter or full body to an object/hands close-up.
+- Corrections cannot override the director subject, shot size or prohibition of readable text.
+- Keep the shot distinct without changing approved framing; choose appropriate framing only when no director shot is supplied.
+- No overlay text, typography, captions, logos, watermarks or pseudo-writing.
+- Maintain continuity with previous and following shots.
+Return only the English visual prompt."""
 
-        text = self.article_generator._call_api(
+        result = self.article_generator._call_api(
             messages=[{"role": "user", "content": user_prompt}],
-            max_tokens=256,
+            max_tokens=4096,
         )
-        prompt = self._clean_prompt(text)
-        logger.info(f"图片 prompt 生成完成: {prompt}")
+        prompt = self._clean_prompt(result)
+        logger.info("当前分镜画面提示词规划完成")
         return prompt
 
     def _clean_prompt(self, text: str) -> str:
         prompt = (text or "").strip()
         prompt = re.sub(r"^```(?:text)?\s*|\s*```$", "", prompt, flags=re.S).strip()
-        prompt = prompt.splitlines()[0].strip() if "\n" in prompt else prompt
+        prompt = " ".join(prompt.splitlines()).strip()
         prompt = re.sub(r"^\s*[-*\d.)]+\s*", "", prompt).strip()
         prompt = prompt.strip("\"'“”‘’")
-        words = prompt.split()
-        if len(words) > 30:
-            prompt = " ".join(words[:30])
         if not prompt:
-            prompt = "cinematic educational scene, clear subject, natural lighting, detailed composition"
+            raise ValueError("图片提示词模型返回空内容，需重新生成")
         return prompt

@@ -48,6 +48,9 @@ import { WorkspaceInspector } from '../components/WorkspaceInspector'
 import { WorkspaceSettingsOverlay } from '../components/WorkspaceSettingsOverlay'
 import { WorkspaceStoryboardNav } from '../components/WorkspaceStoryboardNav'
 import { WorkspaceStageNavigator } from '../components/WorkspaceStageNavigator'
+import { nativeVideoPresentation } from './nativeVideoState'
+import { ImageReviewPanel } from '../components/ImageReviewPanel'
+import { VideoFirstPanel } from '../components/VideoFirstPanel'
 import { BrandLoader } from '../components/ui/BrandLoader'
 import { Lightbox } from '../components/ui/Lightbox'
 import { usePollingResource } from '../hooks/usePollingResource'
@@ -221,6 +224,7 @@ export function WorkspacePage() {
   const [selectedVoice, setSelectedVoice] = useState('')
   const [ttsOptions, setTtsOptions] = useState({ speed_level: 'normal' })
   const [runtimeConfig, setRuntimeConfig] = useState(readRuntimeConfig)
+  const [nativeVideoStatus, setNativeVideoStatus] = useState(null)
   const [voicePreviewState, setVoicePreviewState] = useState(() => nextPreviewState())
   const voiceAudioRef = useRef(null)
   const previewTokenRef = useRef(0)
@@ -539,8 +543,10 @@ export function WorkspacePage() {
     || (previewJobIsActive && !previewJobPolling.error),
   )
   const activeStyle = visualStyles.find(style => style.value === workspace?.visual_style) || visualStyles[0]
-  const stage = stageMeta(workspace)
-  const journey = useMemo(() => deriveWorkspaceJourney(workspace || {}), [workspace])
+  const nativePresentation = nativeVideoStatus?.taskId === taskId ? nativeVideoPresentation(nativeVideoStatus.job) : null
+  const onNativeVideoStatus = useCallback(job => setNativeVideoStatus({ taskId, job }), [taskId])
+  const stage = nativePresentation?.stage || stageMeta(workspace)
+  const journey = nativePresentation?.journey || deriveWorkspaceJourney(workspace || {})
   const workspaceIssues = useMemo(() => collectWorkspaceIssues(workspace || {}), [workspace])
   const voiceReady = Boolean(workspace?.voice_confirmed && workspace?.voice_type)
   const visualPlanReady = Boolean(
@@ -774,13 +780,15 @@ export function WorkspacePage() {
   }
 
   const confirmVoice = async () => {
-    if (!selectedVoice) return toast.warning('请先选择一个配音音色')
+    if (!selectedVoice) return toast.warning('请选择配音音色或本地无旁白模式')
     setBusyAction('voice-validation')
     try {
-      await previewVoice(
-        { voice_type: selectedVoice, tts_options: ttsOptions },
-        { silent: true },
-      )
+      if (selectedVoice !== 'silent:default') {
+        await previewVoice(
+          { voice_type: selectedVoice, tts_options: ttsOptions },
+          { silent: true },
+        )
+      }
     } catch (error) {
       setBusyAction('')
       return toast.error(`该音色当前无法生成配音：${errorToastMessage(error)}`)
@@ -789,7 +797,7 @@ export function WorkspacePage() {
     if (saved) {
       setWorkspaceSettingsOpen(false)
       if (window.matchMedia?.('(max-width: 780px)').matches) selectMobilePane('preview')
-      toast.success('全片音色已确认')
+      toast.success(selectedVoice === 'silent:default' ? '已启用本地无旁白模式' : '全片音色已确认')
     }
   }
 
@@ -825,8 +833,23 @@ export function WorkspacePage() {
         if (!await saveWorkspaceSettings({ voice_type: selectedVoice, tts_options: ttsOptions, voice_confirmed: true })) return
       }
       const latest = await getTaskWorkspace(taskId)
-      await confirmProduction(taskId, { snapshot_key: latest.snapshot_key, plan_version: latest.plan_version })
-      toast.success('已确认生产，图片、配音和视频将在后台连续生成')
+      const visualFirst = (latest.voice_type || selectedVoice) === 'silent:default'
+      if (visualFirst) {
+        const count = Number(latest.segments_count || latest.segments?.length || 0)
+        if (count > 12) {
+          toast.warning('第一版视频优先模式最多 12 个分镜，请减少分镜数量')
+          return
+        }
+        if (!window.confirm(
+          `即将按分镜真实生成 AI 动态视频：${count} 个镜头，每段 5 秒。\\n\\n预计最多请求 ${count} 段万相图生视频（已有且有效的视频素材会复用），产生的费用按百炼实际账单结算。\\n\\n注意：任一镜头失败都会停止成片，不会改用静态图片。确认开始？`
+        )) return
+      }
+      await confirmProduction(taskId, {
+        snapshot_key: latest.snapshot_key,
+        plan_version: latest.plan_version,
+        ...(visualFirst ? { confirm_paid_video: true } : {}),
+      })
+      toast.success(visualFirst ? '已开始动态视频生产：生图 → 万相图生视频 → 拼接真实 MP4' : '已确认生产，图片、配音和视频将在后台连续生成')
       workspacePolling.refresh()
     } catch (error) {
       toast.error(errorToastMessage(error))
@@ -854,12 +877,12 @@ export function WorkspacePage() {
     }
   }
 
-  const regeneratePrompt = async segment => {
+  const regeneratePrompt = async (segment, feedback) => {
     if (!await flushEdits()) return
     const actionKey = `prompt:${segment.segment_index}`
     setBusyAction(actionKey)
     try {
-      await regenerateSegmentPrompt(taskId, segment.segment_index, { snapshot_key: workspaceRef.current?.snapshot_key })
+      await regenerateSegmentPrompt(taskId, segment.segment_index, { snapshot_key: workspaceRef.current?.snapshot_key, ...(feedback ? { feedback } : {}) })
       toast.success(`已开始重新生成第 ${segment.segment_index + 1} 段提示词`)
       workspacePolling.refresh()
     } catch (error) {
@@ -1156,6 +1179,7 @@ export function WorkspacePage() {
   return <main className={`production-workspace${settingsOpen ? ' is-settings-open' : ''}`} data-mobile-pane={mobilePane}>
     {workspace.input_mode_required && <section className="batch-alert" role="alert"><p>这个历史任务没有记录输入模式。原始输入：{workspace.original_input}。请选择后再继续。</p>{[['theme','这是主题'],['script','这是完整文稿']].map(([mode,label])=><button key={mode} onClick={async()=>{try{await resolveInputMode(taskId,mode);await resumeTask(taskId);workspacePolling.refresh()}catch(e){toast.error(errorToastMessage(e))}}}>{label}</button>)}</section>}
     <WorkspaceStageNavigator journey={journey} onHelp={() => setTourOpen(true)} onNavigate={navigateJourneyStep} />
+
     <div className="workspace-polling-notices">
       {workspacePolling.error ? <PollingFailureNotice
         title="工作台连接已中断"
@@ -1224,6 +1248,11 @@ export function WorkspacePage() {
         </div>
 
         <dl className="workspace-metrics">
+          {workspace.ip_profile ? <div><dt>系列 IP</dt>
+            <dd title={workspace.ip_profile.voice_style || workspace.ip_profile.persona || ''}>
+              {workspace.ip_profile.name} · v{workspace.ip_profile.version}
+            </dd>
+          </div> : null}
           <div><dt>实际分镜</dt><dd>{workspace.segments_count} 段</dd></div>
           <div><dt>{workspace.duration_is_estimate ? '预计时长' : '真实时长'}</dt><dd>{secondsToLabel(workspace.estimated_duration)}</dd></div>
           <div><dt>素材耗时</dt><dd>{formatEstimate(workspace.generation_estimate)}</dd></div>
@@ -1265,6 +1294,15 @@ export function WorkspacePage() {
             </button>)}
           </div>
         </section>
+        {currentSegment?.image_path || currentSegment?.image_url ? <ImageReviewPanel
+          key={`${taskId}:${currentSegment.segment_index}:${currentSegment.image_path || currentSegment.image_url}`}
+          taskId={taskId}
+          segmentIndex={currentSegment.segment_index}
+          imageIdentity={currentSegment.image_path || currentSegment.image_url}
+          disabled={!editable || Boolean(busyAction)}
+          onCorrectPrompt={feedback => regeneratePrompt(currentSegment, feedback)}
+        /> : null}
+        <VideoFirstPanel key={taskId} taskId={taskId} segments={segments} ratio={workspace.ratio} production={workspace.production} onStatusChange={onNativeVideoStatus} />
       </aside>
 
       <WorkspaceStoryboardNav
@@ -1334,6 +1372,7 @@ export function WorkspacePage() {
         normalizeRuntime={normalizeRuntimeConfig}
         onSaveRuntime={saveRuntimeConfig}
         onOpenApi={() => navigate(`/workspace/${taskId}/settings`)}
+        onVideoReady={workspacePolling.refresh}
         onAssetSelected={({ assetType }) => {
           toast.success(assetType === 'audio' ? '已切换为这个配音版本' : '已切换为这个图片版本')
           workspacePolling.refresh()
@@ -1342,7 +1381,10 @@ export function WorkspacePage() {
       />
     </div>
 
-    <WorkspaceActionBar
+    {nativePresentation ? <footer className="workspace-actionbar">
+      <div className="workspace-action-status"><strong>{stage.title}</strong><span>{stage.description}</span></div>
+      <button type="button" className="button button-secondary" onClick={() => document.querySelector('.video-first-panel')?.scrollIntoView({ behavior: 'smooth', block: 'center' })}>查看原生视频交付</button>
+    </footer> : <WorkspaceActionBar
       workspace={workspace}
       stage={stage}
       voiceReady={voiceReady}
@@ -1368,7 +1410,7 @@ export function WorkspacePage() {
       onFullVideo={createFullVideoPreview}
       onCancelFullVideo={cancelFullVideoPreview}
       onExport={enterExport}
-    />
+    />}
 
       <input ref={uploadInputRef} type="file" accept="image/jpeg,image/png,image/webp" hidden onChange={handleImageUpload} />
       <Lightbox

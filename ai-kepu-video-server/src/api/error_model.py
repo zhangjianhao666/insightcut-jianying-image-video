@@ -421,7 +421,7 @@ def classify_exception(
         code=code,
         retryable=_retryable_for(code, status),
         retry_after_seconds=retry_after,
-        safe_message=SAFE_MESSAGES[code],
+        safe_message="服务商要求付费，请检查账号余额或计费状态后重试。" if status == 402 else SAFE_MESSAGES[code],
         provider=safe_provider,
         http_status=status,
         request_id=_request_id(error, headers),

@@ -103,6 +103,7 @@ npm run dev
 - **自定义兼容接口**：`protocol` / `base_url` / `model` 仍可编辑，用于自定义 OpenAI-compatible 或 Anthropic-compatible 端点及旧配置兼容。
 - **Provider Registry**：默认目录来自当前安装的 LiteLLM 本地元数据，并合并项目覆盖与 MiMo 等扩展；账号可用模型的在线同步是可选能力，失败不影响本地目录和已选模型。
 - **凭证安全**：不得记录 API Key、Authorization header、provider secret 字段、完整凭证对象或模型同步请求数据。
+- **输出完整性**：生文响应为长度截断或空内容时返回具体脱敏原因，停止按同一参数自动重试；连接、限流等异常仍遵守配置的重试策略。导演失败记录保留安全原因与是否可重试。
 - **核心文件**：`src/text/generator.py` 的 `_call_api()` 方法
 
 ### 生图模块
@@ -132,6 +133,28 @@ npm run dev
 - **MiMo VoiceClone**：克隆模型固定为 `mimo-v2.5-tts-voiceclone`。上传的 MP3/WAV 或浏览器录音会统一转换为 24 kHz 单声道 WAV，保存到 `data/media/_voice_clones/<clone_id>/reference.wav`，试听保存为同目录 `preview.wav`。
 - **VoiceClone 安全与限制**：必须确认声音授权；参考音频转为 Base64 后不得超过 10 MB。小米没有远端保存 `voice_id` 机制，每次克隆合成都从本地临时组装 `data:audio/wav;base64,...` 作为 `audio.voice`；DataURL 不得写入数据库、配置或日志。
 - **VoiceClone 生命周期**：状态为 `draft/ready/failed/hidden`；只有试听成功的克隆音色才能启用。已被任务引用的克隆音色删除时只做隐藏，未引用的才删除本地文件。克隆失败也必须保留参考音频和已生成试听。
+
+### 生视频模块（图生视频 I2V）
+
+`video.provider` 选择逐镜头图生视频服务商，配置保存在 `data/config.json` 的 `video` 段，也可在设置页「AI 动态视频」修改：
+
+- **MiniMax 海螺 v1（`provider=minimax`）**：`base_url` 默认 `https://api.minimax.cn`，模型 `MiniMax-Hailuo-2.3` / `MiniMax-Hailuo-2.3-Fast` / `MiniMax-Hailuo-02`。提交 `POST /v1/video_generation`（`prompt` + `first_frame_image`），查询 `GET /v1/query/video_generation?task_id=`，取地址 `GET /v1/files/retrieve?file_id=`。首帧以 Base64 Data URL 提交，不需要公网图床；**输出无音轨**。
+- **MiniMax-H3 / MiniMax-H3-Max（`provider=minimax`，当前默认模型）**：走**另一套 `POST /v2/video_generation`**，body 用多模态 `content` 数组（`text` + `image_url`，另支持 `video_url`/`audio_url`）；`duration` 为 4–15 秒整数，`resolution` 为 `480P / 768P / 2K`，`ratio` 必填并按首帧宽高比自动推断（可选 `adaptive/16:9/4:3/1:1/3:4/9:16/21:9`）。查询与下载仍走 v1 的 `query/video_generation` 与 `files/retrieve`。**成片自带 AAC 音轨**（实测 32kHz 立体声，环境音效与拟音，不是可编辑旁白）。v2 不接受 Hailuo 2.3 系列模型。
+- **海螺 v1 时长与分辨率**：`resolution` 支持 `1080P`（仅 6 秒）与 `768P`（6 或 10 秒）；`duration` 必须落在当前模型 + 分辨率的合法集合内，服务商自身也会校验。
+- **H3 原生讲解与 IP 声音**：IP 可上传 2–15 秒、最多 8 MB 的 PCM WAV，私有版本文件保存在 `data/_private/ip_voices/`；新项目快照当前 IP 声音版本，已有项目不自动变化。项目声音上传覆盖 IP 快照，移除覆盖恢复已绑定声音。整片和单镜头共用 `src/text/native_dialogue.py`，从分镜原文编译准确台词与 `(S1)` / `<Audio 1>` 绑定，台词过长时在付费提交前拒绝，禁止截断。Wan 和旧海螺不添加原生对白。
+- **音轨保留**：`video_first.render_clips()` 会逐片段探测；只要有片段自带音轨就保留，并在 concat 时统一 `-c:a aac`，无声片段补等长静音轨以保持流结构一致，结果写入 `has_audio`。H3 原生对白使用本地 ASR 获取时间轴，其他音轨按实际内容处理；不能用脚本文字伪造语音验收。
+- **分镜脚本（`src/text/storyboard_director.py`）**：短片导演计划必须覆盖全部镜头，动作脚本分四段并使用英文方括号运镜，正常切镜不强制尾帧一致。完整且顺序正确的①②③④编号四段会只做分号格式标准化，保留原文动作；缺段、乱序、空段或不满足长度要求仍失败。H3 允许自然口型、由系统编译准确对白，其他服务商保留独立音轨行为。规划预算包含推理与输出 token，短片最低 8000；官方 DeepSeek V4 Pro 的分镜边界和详细设计阶段使用 64000 token 上限，避免思考挤占完整 JSON 输出，其他模型保持原预算；失败记录脱敏阶段与错误类别，不缓存成成功。`POST /tasks/{id}/director/replan` 后台重新规划并保留素材，规划期间禁止生成视频；新计划会使旧运动提示对应的成片过期，不能自动重新提交付费镜头。
+- **原生对白自动交付**：H3 非静音整片默认开启中文字幕、总长预算默认镜头数 × 单镜头请求时长。`src/media/native_delivery.py` 使用显式配置的本地 faster-whisper 识别，句子覆盖差异、缺音轨、缺模型、缺字幕滤镜、完整对白超预算均阻塞交付，保留全部资产。只裁剪语音之外的首尾空白，不截断或静默加速台词；最终探测音轨/时长并完整解码后才完成。SRT/VTT 必须经 SubtitleWriter；字幕/中间视频及时入库。`POST /tasks/{id}/video-first/delivery` 只重试本地交付，不调用付费服务商。
+- **原生字幕排版**：按本地 ASR 实际句子时间轴显示，长句拆为最多两行的短字幕，不把整镜文稿塞入单行；横屏每行最多 40 显示列（约 20 个汉字），竖屏最多 18 列，并保留左右安全边距。长句内拆分时段为句内比例估算，不冒充逐字时间戳。SRT/VTT 仍复用 SubtitleWriter，其他导出默认行为不变。
+- **本地识别环境**：`.env` 配置 `NATIVE_ASR_PYTHON`（安装 `faster-whisper==1.2.1` 的独立 Python 3.11）与 `NATIVE_ASR_MODEL_PATH`（已有 CTranslate2 模型目录，含 `model.bin/config.json/tokenizer.json`）；不会自动下载模型。可用 `uv venv data/_private/asr/venv --python 3.11`、`uv pip install --python data/_private/asr/venv/bin/python faster-whisper==1.2.1` 配置独立环境。需要 FFprobe 与支持 libass 的 FFmpeg，`NATIVE_DELIVERY_FFMPEG` 可指定二进制，否则在系统与 imageio-ffmpeg 中选择支持字幕的版本。模型内容和识别参数纳入转写缓存身份；模型/声音数据不得提交 Git。
+- **原生视频生命周期**：整片、本地交付和逐镜头下载登记运行时租约；取消会阻止排队镜头首次提交，已提交镜头保留远端 ID 并等待查询/下载退出，删除与关闭服务必须等待这些文件操作。工作台显示生成/识别/字幕/渲染/验收/交付阻塞状态，不要求旧 TTS 资产伪造成功。
+- **百炼万相（`provider=wan`，默认）**：保持原有行为；`base_url/api_key/model` 留空时自动复用 `DASHSCOPE_API_KEY`、`.env`、当前 LLM/生图工作空间地址，单镜头支持 5、10、15 秒。
+- **环境变量**：`VIDEO_PROVIDER`、`VIDEO_BASE_URL`、`VIDEO_API_KEY`、`VIDEO_MODEL`、`VIDEO_RESOLUTION`、`VIDEO_DURATION`、`MINIMAX_API_KEY`、`MINIMAX_BASE_URL`、`MINIMAX_VIDEO_MODEL`、`MINIMAX_VIDEO_RESOLUTION`。
+- **核心文件**：`src/media/minimax_i2v.py`、`src/media/wan_i2v.py`；服务商选择在 `src/media/shot_video_jobs.py` 的 `video_provider()/provider_class()/duration_options()`，时长校验统一读这里。
+- **付费与安全**：只有用户显式确认才提交付费任务；下载前校验 https 且拒绝本地/私有地址；凭证失败只返回脱敏错误。
+
+- **导演质量闭环**：新建原生 H3 短片候选先由导演设计，再由独立提示词的审查 Agent 检查需求、人物服装、因果、状态、道具、时长和镜头接续。最多一次局部修复、随后复审；保持原文、镜头序号/时长与无关镜头。审查/修复单次调用不做隐藏重试，全球性问题或二次拒绝停止并保留候选。旧计划和长文 TTS 流程保持兼容。
+- **审查与素材版本**：待审、拒绝、被编辑后的候选禁止提交新的生图/生视频任务；已生成素材、远端已有任务下载和本机导出继续保留。审查通过的图片描述原子同步到分段，变更的旧图片标为 stale；正文、图片描述、画风或比例变化使审查失效。服务重启中断审查后只允许用户显式重试，不静默重复模型调用。计划历史保存在 `data/media/_storyboard_plans/history/`；既有候选可通过“审查并修正分镜（保留素材）”明确确认文本模型费用后重审。
 
 ## 存储配置
 
@@ -165,3 +188,13 @@ npm run dev
 - 在前端目录运行 `npx playwright test --config=playwright.site.config.js` 验证 390/768/1440 宽度、真实视频播放与文档，预览服务使用独立端口 2104。
 
 - Pages 发布使用 `.github/workflows/pages.yml`，只接收本仓库 `master` 的成功 push CI；发布前校验 8 项检查、最新 SHA 和构建产物身份，不执行 PR 产物中的代码。失败、PR、过期运行不能部署。配置与回退见 `docs/pages-release.md`。
+
+### 原生分镜与 MiniMax 生图
+
+- H3 的 review_first 新任务先由现有导演模型按完整文稿设计语义分镜，完整保留原文，逐镜时长 4–15 秒；`generation_options.target_duration_seconds` 可固定目标总时长。当前单次原生视频上限仍为 12 镜/180 秒；不得宣称已支持任意长视频。旧任务和旧 TTS 分段保持兼容。
+- MiniMax 图片配置使用 `image.provider=minimax`、官方 `/v1/image_generation`、`model=image-01`；逐镜传入导演图片描述和已有 IP 参考图，单次 `n=1`，关闭 prompt_optimizer，Base64 返回落本地。不记录 Key、参考图 DataURL 或完整请求。
+- 模型正文为空或输出截断必须报告失败，禁止用通用提示词伪造完成；导演方案保存到检查点，取消和重试保留已生成文本及图片。
+- IP 已有参考图时，导演必须同时获得外观和服装文字约束；字段不完整时阻止规划，不得凭角色名字或性格发明外观。参考图与文字必须一致。
+- 万相逐镜请求固定 `n=1` 且 `enable_sequential=false`；图片旁的 `.receipt.json` 保存 request_id、请求张数、返回张数及 usage.image_count，不保存 Key 或完整请求。返回张数或用量超过1时报错，核对记录后再决定是否继续。
+
+- **分镜生图审查**：每镜按 `visual_contract` 编译主体/景别/禁文字约束，物体特写与仅手部镜头不得强加肖像参考；完整提示词超限拒绝调用，不截断规则。工作台画面审查显式确认 token 费用后调用百炼 Qwen3-vl-plus，仅看已有图片，不自动生图或重试；缺少必要参考返回无法确定，图片/计划/审查版本变化使旧结果失效。

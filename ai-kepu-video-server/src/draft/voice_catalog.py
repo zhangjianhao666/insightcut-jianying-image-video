@@ -83,6 +83,8 @@ def build_voice_key(provider: str, voice_id: str, kind: str = "preset") -> str:
         raise ValueError("音色 ID 不能为空")
     if kind == "clone" or provider == "mimo-clone":
         return f"mimo-clone:{voice_id}"
+    if provider == "silent" and voice_id == "default":
+        return "silent:default"
     if provider not in {"doubao", "mimo"}:
         raise ValueError(f"不支持的 TTS provider: {provider}")
     return f"{provider}:{voice_id}"
@@ -93,6 +95,8 @@ def parse_voice_key(value: Optional[str], default_provider: str = "mimo") -> Voi
     fallback = (default_provider or "mimo").strip().lower()
     if fallback not in {"doubao", "mimo"}:
         fallback = "mimo"
+    if raw == "silent:default":
+        return VoiceSelection("silent", "default", "preset")
     if raw.startswith("mimo-clone:"):
         return VoiceSelection("mimo", raw.split(":", 1)[1], "clone")
     if raw.startswith("mimo:") or raw.startswith("doubao:"):

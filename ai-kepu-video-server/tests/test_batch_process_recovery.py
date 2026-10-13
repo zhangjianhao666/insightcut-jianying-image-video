@@ -19,6 +19,10 @@ def _free_port() -> int:
 
 
 def _start_server(port: int, environment: dict) -> subprocess.Popen:
+    config_path = Path(environment["INSIGHTCUT_DATA_ROOT"]) / "data" / "config.json"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    if not config_path.exists():
+        config_path.write_text('{"video":{"provider":"wan"}}', encoding="utf-8")
     process = subprocess.Popen(
         [
             sys.executable,

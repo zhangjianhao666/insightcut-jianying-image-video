@@ -572,3 +572,11 @@ def test_legacy_error_sanitization_removes_secrets_from_all_durable_error_fields
     assert data_url not in serialized
     assert "Authorization:" not in serialized
     assert "Bearer " not in serialized
+
+
+def test_payment_required_is_safe_actionable_and_never_auto_retry():
+    result = classify_exception(FakeProviderError('sk-private-provider-body', status_code=402))
+    assert result.http_status == 402
+    assert result.retryable is False
+    assert '余额' in result.safe_message
+    assert 'sk-private' not in json.dumps(result.to_record())
