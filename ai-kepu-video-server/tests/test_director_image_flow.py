@@ -140,3 +140,20 @@ def test_visual_purpose_is_not_silently_truncated():
     purpose = '这一镜完整视觉设计的理由。' * 50
     plan = _normalize_plan({'shots': [{'index': 0, 'image_prompt': 'A white bowl of beige chickpeas', 'purpose': purpose}]}, 1)
     assert plan['shots']['0']['purpose'] == purpose
+
+
+def test_director_preserves_specific_provider_failure(tmp_path, monkeypatch):
+    from src.config import Config
+    from src.text import ip_library, storyboard_director
+    from src.api.error_model import ClassifiedError, ErrorCode, SafeError
+    monkeypatch.setattr(Config, 'BASE_DIR', tmp_path)
+    monkeypatch.setattr(ip_library, 'project_ip', lambda _: None)
+    class Fail:
+        def _call_api(self, **kwargs):
+            raise ClassifiedError(SafeError(code=ErrorCode.PROVIDER_ERROR, retryable=False,
+                safe_message='模型输出因长度限制被截断，请调整输出预算后重试。', provider='llm'))
+    plan = storyboard_director.plan_storyboard('test', Fail(), script='豆子。', segments=['豆子。'],
+        summary='豆类', style='2D', ratio='16:9')
+    assert plan['status'] == 'failed'
+    assert '截断' in plan['error']['safe_message']
+    assert plan['error']['retryable'] is False

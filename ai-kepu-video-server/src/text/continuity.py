@@ -27,6 +27,9 @@ def normalize_shot(shot, index):
         _short(name, 50) for name in cast[:8]
         if isinstance(name, str) and _short(name, 50)
     ]
+    camera = str(shot.get("camera") or "").strip()
+    if len(camera) > 2000:
+        raise ValueError("camera 描述过长，请导演精简，不得截断")
     transition = _short(shot.get("transition_to_next"), 30).lower()
     if transition not in TRANSITIONS:
         transition = "cut"
@@ -34,7 +37,7 @@ def normalize_shot(shot, index):
         "scene_id": scene,
         "character_ids": cast,
         "location_id": _short(shot.get("location_id"), 80),
-        "camera": _short(shot.get("camera"), 120),
+        "camera": camera,
         "start_state": _short(shot.get("start_state"), 360),
         "end_state": _short(shot.get("end_state"), 360),
         "transition_to_next": transition,

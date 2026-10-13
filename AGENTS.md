@@ -103,6 +103,7 @@ npm run dev
 - **自定义兼容接口**：`protocol` / `base_url` / `model` 仍可编辑，用于自定义 OpenAI-compatible 或 Anthropic-compatible 端点及旧配置兼容。
 - **Provider Registry**：默认目录来自当前安装的 LiteLLM 本地元数据，并合并项目覆盖与 MiMo 等扩展；账号可用模型的在线同步是可选能力，失败不影响本地目录和已选模型。
 - **凭证安全**：不得记录 API Key、Authorization header、provider secret 字段、完整凭证对象或模型同步请求数据。
+- **输出完整性**：生文响应为长度截断或空内容时返回具体脱敏原因，停止按同一参数自动重试；连接、限流等异常仍遵守配置的重试策略。导演失败记录保留安全原因与是否可重试。
 - **核心文件**：`src/text/generator.py` 的 `_call_api()` 方法
 
 ### 生图模块

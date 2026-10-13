@@ -266,7 +266,9 @@ def test_provider_failure_diagnostics_never_copy_exception(monkeypatch, tmp_path
         def _call_api(self, **kwargs):
             raise TimeoutError('api_key=secret-provider-response')
     result = storyboard_director.plan_storyboard('safe_diagnostic', Model(), script='文', segments=['一句'], summary='', style='', ratio='16:9')
-    assert result['error'] == {'stage': 'provider', 'category': 'timeout'}
+    assert {key: result['error'][key] for key in ('stage', 'category')} == {'stage': 'provider', 'category': 'timeout'}
+    assert result['error']['retryable'] is True
+    assert '超时' in result['error']['safe_message']
     assert 'safe_diagnostic' in caplog.text
     assert 'secret-provider-response' not in caplog.text
     assert 'secret-provider-response' not in json.dumps(result)
@@ -392,3 +394,14 @@ def test_short_motion_with_full_coverage_is_not_accepted(monkeypatch, tmp_path):
     result = storyboard_director.plan_storyboard('short_motion', Model(), script='文', segments=['一句'], summary='', style='', ratio='16:9')
     assert result['status'] == 'failed'
     assert result['error'] == {'stage': 'validation', 'category': 'invalid_shot_structure'}
+
+
+def test_director_camera_instruction_is_preserved_without_cutting():
+    camera = 'Medium close-up, keep the bowl and hands within the frame, follow the existing 180-degree axis, maintain the left window light; never include the face.'
+    result = continuity.normalize_shot({'camera': camera}, 0)
+    assert result['camera'] == camera
+
+
+def test_oversized_camera_instruction_is_rejected_not_clipped():
+    with pytest.raises(ValueError, match='camera'):
+        continuity.normalize_shot({'camera': 'x' * 2001}, 0)

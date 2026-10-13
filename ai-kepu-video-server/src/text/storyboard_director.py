@@ -286,9 +286,12 @@ def plan_storyboard(task_id, generator, *, script, segments, summary, style, rat
     except Exception as failure:
         # Preserve original reliable generation path on model/JSON failure.
         from src.api.error_model import classify_exception
-        category = (classify_exception(failure).code.value if stage == "provider"
+        safe = classify_exception(failure)
+        category = (safe.code.value if stage == "provider"
                     else "invalid_json" if stage == "parse" else validation_category)
         error = {"stage": stage, "category": category}
+        if stage == "provider":
+            error.update(safe_message=safe.safe_message, retryable=safe.retryable)
         log.warning("[%s] 分镜导演规划失败 stage=%s category=%s", task_id, stage, category)
         parsed = {"visual_bible": {}, "shots": {}}
     if ip_bible:

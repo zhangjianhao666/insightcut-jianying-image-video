@@ -306,3 +306,23 @@ def test_retry_logs_do_not_expose_secrets(
         assert marker not in rendered_traceback
         assert marker not in rendered_context
         assert marker not in rendered_locals
+
+
+@pytest.mark.parametrize('finish_reason,content,expected_message', [
+    ('length', '{"partial":"sk-test-truncated-secret"}', '截断'),
+    ('stop', '   ', '空内容'),
+])
+def test_incomplete_model_output_is_specific_and_does_not_repeat_paid_call(monkeypatch, finish_reason, content, expected_message):
+    calls = []
+    def completion(**kwargs):
+        calls.append(True)
+        return SimpleNamespace(choices=[SimpleNamespace(finish_reason=finish_reason, message=SimpleNamespace(content=content))])
+    monkeypatch.setattr(generator_module, '_wait_for_llm_throttle', lambda: None)
+    monkeypatch.setattr(generator_module.time, 'sleep', lambda _: None)
+    result, failure = generator_module._run_completion_with_retries(
+        completion, {}, {'retry_count': 2, 'retry_interval_seconds': 1})
+    assert result is None
+    assert expected_message in failure.safe_message
+    assert failure.retryable is False
+    assert len(calls) == 1
+    assert 'sk-test-truncated-secret' not in str(failure)

@@ -92,8 +92,20 @@ def _run_completion_with_retries(completion, kwargs, generation_config=None):
             response = completion(**kwargs)
             choice = response.choices[0]
             content = choice.message.content
-            if getattr(choice, "finish_reason", None) == "length" or not str(content or "").strip():
-                raise ValueError("模型输出为空或因长度限制截断")
+            if getattr(choice, "finish_reason", None) == "length":
+                return None, SafeError(
+                    code=ErrorCode.PROVIDER_ERROR,
+                    retryable=False,
+                    safe_message="模型输出因长度限制被截断，请调整输出预算或精简任务后重试。",
+                    provider="llm",
+                )
+            if not str(content or "").strip():
+                return None, SafeError(
+                    code=ErrorCode.PROVIDER_ERROR,
+                    retryable=False,
+                    safe_message="模型返回空内容，请检查模型设置后重试。",
+                    provider="llm",
+                )
             return content, None
         except Exception as error:
             safe_error = classify_exception(error, provider="llm")
