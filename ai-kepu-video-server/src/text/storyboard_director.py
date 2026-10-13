@@ -16,7 +16,21 @@ from src.text.continuity import normalize_boundaries, normalize_shot, audit_plan
 
 log = logging.getLogger(__name__)
 _PLAN_VERSION = 4
-_PROMPT_VERSION = 2
+_PROMPT_VERSION = 3
+
+
+def _director_output_budget(generator, fallback):
+    # DeepSeek V4 Pro counts thinking tokens in max_tokens. A real ten-shot
+    # request used 20,174 thinking tokens and exhausted the old 22,000 cap
+    # before completing its JSON. Keep this policy specific to this provider
+    # and model; custom endpoints may have entirely different limits.
+    if (getattr(generator, "provider", None) == "deepseek"
+            and getattr(generator, "model", None) in (
+                "deepseek/deepseek-v4-pro", "deepseek-v4-pro")):
+        return max(64000, fallback)
+    return fallback
+
+
 # Shared fallback so a shot without a planned motion script still tells the
 # image-to-video model to continue the previous frame instead of starting over.
 DEFAULT_MOTION_PROMPT = (
@@ -194,6 +208,7 @@ def plan_storyboard(task_id, generator, *, script, segments, summary, style, rat
         "全片始终绑定同一个 IP、服装和画风。人物出现时外貌、发型、体型、服装与配饰必须一致；"
         "只露手或衣袖时，肤色、衣袖和可见配饰仍沿用同一人物设定。人物不出镜不代表更换讲述者。"
         "同一实际场景的布局、道具和光线保持可解释的连续性；摄影语言可随叙事需要变化，画风不能漂移。"
+        "environment_lock 需给出本集场景的稳定相对位置关系，镜头的画面左右要与机位相符，不混淆物理方位和屏幕方位。"
         "返回纯 JSON 对象：visual_bible(character_lock, environment_lock, art_direction,"
         " camera_language, negative_rules) 和 shots 列表。"
         "shots 每项必须包含：index(0开始)、scene_id(同一实际场景用同一编号，如 scene_01)、"
@@ -206,11 +221,14 @@ def plan_storyboard(task_id, generator, *, script, segments, summary, style, rat
         "character 表示画面有人物面部或身体，hands 表示仅可见手部，object 表示无人物的主体，diagram 表示图解。"
         "character_ids 只列实际可见角色；不要求 IP 每镜出镜，也不能因改变景别而更换 IP。"
         "返回前逐镜自检：分类、景别、首帧内容、开场状态和动作描述不能相互矛盾；"
+        "image_prompt 是 start_state 的静态首帧；运镜方向与沿途物体位置一致；"
+        "end_state 必须是动作脚本执行完后的最终状态，人物、物体和工具名称保持一致，不能遗漏最后的拿起或放下动作。"
         "hands 不能同时描述人物面部或身体出镜，人物镜头的景别不能声称展示构图范围外的部位。"
         "动作按真实时长可完成；需要跨越长时间的过程应明确省略或时间压缩，不能暗示瞬间完成。"
         "画面描述必须具体可画，抽象营养概念不得直接变成含文字标签的伪科学图。"
         "每项只描述一个可独立生成的连续画面；禁止在单镜内拼图、分屏或多个并列画面，多个做法分到不同镜头。"
-        "purpose(这一镜在叙事中的作用，以及画面如何帮助理解对应旁白)、"
+        "purpose(独立的视觉设计理由：写明本镜实际画面中的动作、对比或关系如何支持观众理解旁白；"
+        "不得照抄 narrative_purpose 或仅重复本镜讲了什么；不要填写空泛的镜头效果形容词)、"
         "image_prompt(英文：明确单张首帧实际可见的内容、构图和必要的连续性信息，避免堆砌画质形容词)、"
         "motion_prompt(中文150-400字：描述镜头时长内可完成的动作、运镜和声画关系，不另写口播台词)。"
         "motion_prompt 分四段用分号隔开：① 开场状态与视觉约束；② 动作顺序与速度；"
@@ -243,12 +261,17 @@ def plan_storyboard(task_id, generator, *, script, segments, summary, style, rat
             }, ensure_ascii=False)
             + "\n该 IP 是全片稳定讲述者；自主决定何时出镜，角色可见部分必须遵守以上外观和服装设定。"
         )
+    narrative_brief = [
+        {"index": i, "text": item["text"], "duration": item["duration"],
+         "narrative_purpose": item.get("purpose") or ""}
+        for i, item in enumerate(outline or [])
+    ]
     payload = (
         f"{instructions}\n画风：{style[:250]}\n画幅：{ratio}\n全文总结：{summary[:650]}"
         f"\n分镜编号与对应旁白：{json.dumps(excerpt, ensure_ascii=False)}"
         + ip_prompt
         + (f"\nshots 每镜还必须包含duration（4至15秒整数），全部duration之和必须是{target_duration}秒。" if target_duration else "")
-        + ("\n已确认的旁白边界、逐镜时长与叙事作用（保留原文与时长，自主设计画面并填写视觉purpose）：" + json.dumps(outline, ensure_ascii=False) if outline else "")
+        + ("\n已确认的旁白边界、逐镜时长与叙事作用（保留原文与时长，自主设计画面并填写视觉purpose）：" + json.dumps(narrative_brief, ensure_ascii=False) if outline else "")
     )
     error = None
     stage = "provider"
@@ -260,10 +283,10 @@ def plan_storyboard(task_id, generator, *, script, segments, summary, style, rat
             raise ValueError("IP参考图已绑定，但外观和服装文字约束不完整")
         raw = generator._call_api(
             messages=[{"role": "user", "content": payload}],
-            # The budget includes reasoning as well as JSON output. The current
-            # DeepSeek model exhausted 4000 tokens before completing two shots.
-            # Keep room for detailed motion scripts and scale with shot count.
-            max_tokens=min(32768, max(8000, 2200 * min(len(segments), 12))) if compact else 8000,
+            max_tokens=_director_output_budget(
+                generator,
+                min(32768, max(8000, 2200 * min(len(segments), 12))) if compact else 8000,
+            ),
         )
         stage = "parse"
         source = _json_object(raw)
@@ -346,7 +369,9 @@ def direct_segments(generator, script, *, target_duration=None):
         if last_error:
             messages.append({"role": "user", "content": "上一方案未通过校验：" + last_error + "。请重新完整设计。"})
         try:
-            raw = _json_object(generator._call_api(messages=messages, max_tokens=16000))
+            raw = _json_object(generator._call_api(
+                messages=messages, max_tokens=_director_output_budget(generator, 16000),
+            ))
             shots = raw.get("shots")
             if not isinstance(shots, list) or not 1 <= len(shots) <= 12:
                 raise ValueError("镜头数必须是1至12")

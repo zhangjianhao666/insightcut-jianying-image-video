@@ -157,3 +157,59 @@ def test_director_preserves_specific_provider_failure(tmp_path, monkeypatch):
     assert plan['status'] == 'failed'
     assert '截断' in plan['error']['safe_message']
     assert plan['error']['retryable'] is False
+
+
+def test_shot_director_receives_narrative_brief_without_output_purpose_key(tmp_path, monkeypatch):
+    from src.config import Config
+    from src.text import ip_library, storyboard_director
+    monkeypatch.setattr(Config, 'BASE_DIR', tmp_path)
+    monkeypatch.setattr(ip_library, 'project_ip', lambda _: None)
+    class Capture:
+        def _call_api(self, **kwargs):
+            self.prompt = kwargs['messages'][0]['content']
+            return json.dumps({'shots': []})
+    g = Capture()
+    storyboard_director.plan_storyboard('test', g, script='豆子。', segments=['豆子。'],
+        summary='豆类', style='2D', ratio='16:9', target_duration=10,
+        outline=[{'text': '豆子。', 'duration': 10, 'purpose': '介绍豆类身份'}])
+    assert '"narrative_purpose": "介绍豆类身份"' in g.prompt
+    assert '"purpose": "介绍豆类身份"' not in g.prompt
+    assert '"duration": 10' in g.prompt and '"text": "豆子。"' in g.prompt
+
+
+@pytest.mark.parametrize('provider,model,expected', [
+    ('deepseek', 'deepseek/deepseek-v4-pro', 64000),
+    ('deepseek', 'deepseek-v4-pro', 64000),
+    ('deepseek', 'deepseek/deepseek-chat', 16000),
+    ('custom', 'deepseek-v4-pro', 16000),
+])
+def test_boundary_director_budget_includes_pro_reasoning(provider, model, expected):
+    class Capture(Director):
+        def _call_api(self, **kwargs):
+            self.budget = kwargs['max_tokens']
+            return super()._call_api(**kwargs)
+    g = Capture([{'shots': [{'text': '豆子。', 'duration': 10, 'purpose': '介绍豆类'}]}])
+    g.provider, g.model = provider, model
+    direct_segments(g, '豆子。', target_duration=10)
+    assert g.budget == expected
+
+
+@pytest.mark.parametrize('provider,model,expected', [
+    ('deepseek', 'deepseek/deepseek-v4-pro', 64000),
+    ('deepseek', 'deepseek/deepseek-chat', 22000),
+    ('custom', 'deepseek-v4-pro', 22000),
+])
+def test_ten_shot_director_budget_includes_pro_reasoning(tmp_path, monkeypatch, provider, model, expected):
+    from src.config import Config
+    from src.text import ip_library, storyboard_director
+    monkeypatch.setattr(Config, 'BASE_DIR', tmp_path)
+    monkeypatch.setattr(ip_library, 'project_ip', lambda _: None)
+    class Capture:
+        def _call_api(self, **kwargs):
+            self.budget = kwargs['max_tokens']
+            return json.dumps({'shots': []})
+    g = Capture()
+    g.provider, g.model = provider, model
+    storyboard_director.plan_storyboard('test', g, script='豆子。' * 10, segments=['豆子。'] * 10,
+        summary='豆类', style='2D', ratio='16:9', target_duration=120)
+    assert g.budget == expected

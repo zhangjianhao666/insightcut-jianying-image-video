@@ -405,3 +405,16 @@ def test_director_camera_instruction_is_preserved_without_cutting():
 def test_oversized_camera_instruction_is_rejected_not_clipped():
     with pytest.raises(ValueError, match='camera'):
         continuity.normalize_shot({'camera': 'x' * 2001}, 0)
+
+
+def test_preflight_flags_copied_narrative_as_missing_visual_reasoning():
+    shot = planned_shots()[0]
+    shot.update(purpose='介绍豆类身份', narrative_purpose='介绍豆类身份')
+    warnings = continuity.audit_plan({'shots': {'0': shot}})
+    assert any(w['code'] == 'visual_purpose_missing' and w['index'] == 0 for w in warnings)
+
+
+def test_preflight_keeps_distinct_visual_reasoning():
+    shot = planned_shots()[0]
+    shot.update(purpose='将三碗豆类聚拢并与谷物隔开，用空间分组表达同类关系', narrative_purpose='介绍豆类身份')
+    assert not any(w['code'] == 'visual_purpose_missing' for w in continuity.audit_plan({'shots': {'0': shot}}))

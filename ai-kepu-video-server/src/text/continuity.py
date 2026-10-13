@@ -114,6 +114,13 @@ def audit_plan(plan):
     items = sorted(((int(k), v) for k, v in shots.items()), key=lambda x: x[0])
     warnings = []
     for position, (index, shot) in enumerate(items):
+        narrative = re.sub(r"\s+", "", str(shot.get("narrative_purpose") or ""))
+        purpose = re.sub(r"\s+", "", str(shot.get("purpose") or ""))
+        if narrative and (not purpose or purpose == narrative):
+            warnings.append({
+                "index": index, "code": "visual_purpose_missing",
+                "message": "视觉设计理由缺失或照抄叙事作用，需导演说明画面如何支持理解",
+            })
         if not shot.get("start_state") or not shot.get("end_state"):
             warnings.append({
                 "index": index, "code": "state_missing",
