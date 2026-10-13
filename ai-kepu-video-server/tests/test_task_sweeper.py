@@ -241,6 +241,13 @@ def test_periodic_scan_runs_on_one_daemon_thread_and_stops_explicitly():
 
 def test_fastapi_lifespan_owns_sweeper_start_stop_and_join(monkeypatch):
     import api_server
+    from src.api import task_runtime as runtime_module
+
+    # Lifespan shutdown permanently closes its registry. Use a service-local
+    # registry rather than closing the singleton used by subsequent API tests.
+    shared_runtime = runtime_module.task_runtime
+    service_runtime = TaskRuntimeRegistry()
+    monkeypatch.setattr(runtime_module, "task_runtime", service_runtime)
 
     calls = []
 
@@ -278,6 +285,10 @@ def test_fastapi_lifespan_owns_sweeper_start_stop_and_join(monkeypatch):
             calls.append("serving")
 
     asyncio.run(exercise_lifespan())
+    assert service_runtime.begin("after-shutdown") is None
+    shared_token = shared_runtime.begin("lifespan-isolation-check")
+    assert shared_token is not None
+    shared_runtime.finish("lifespan-isolation-check", shared_token)
 
     labels = [item if isinstance(item, str) else item[0] for item in calls]
     assert labels == [

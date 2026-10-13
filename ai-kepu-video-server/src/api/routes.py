@@ -3524,6 +3524,7 @@ def _get_task_workspace_sync(task_id, request):
 
 
 @router.patch("/tasks/{task_id}/settings")
+@_project_media_write
 async def update_task_workspace_settings(task_id: str, payload: dict = Body(...)):
     task_row = mysql_client.get_task(task_id)
     if not task_row:
@@ -3588,6 +3589,9 @@ async def update_task_workspace_settings(task_id: str, payload: dict = Body(...)
         raise HTTPException(status_code=500, detail="保存工作台设置失败")
 
     style_changed = style != old_style or ratio != old_ratio
+    if style_changed:
+        from src.text.storyboard_director import invalidate_review
+        invalidate_review(task_id, style=visual_style, ratio=ratio)
     voice_type_changed = voice_type != old_voice
     tts_options_changed = tts_options_json != task_row.get("tts_options_json")
     voice_changed = voice_type_changed or tts_options_changed
@@ -3669,6 +3673,11 @@ async def generate_task_workspace_assets(task_id: str, response: Response, paylo
     segments = mysql_client.get_segments(task_id)
     if not segments or any(not str(segment.get("image_prompt") or "").strip() for segment in segments):
         raise HTTPException(status_code=409, detail="分镜提示词尚未全部生成")
+    from src.text.storyboard_director import load_plan, planning_blocked
+    candidate = load_plan(task_id) or {}
+    if (candidate.get("review_required") and planning_blocked(candidate)
+            and any(not _workspace_file_ready(segment.get("image_path")) for segment in segments)):
+        raise HTTPException(409, "分镜尚未通过审查，请先审查并修正；已有素材保留")
     if not bool(task_row.get("voice_confirmed")):
         raise HTTPException(status_code=409, detail="请先确认全片配音音色")
     snapshot_key = payload.get("snapshot_key") or ""
@@ -3891,6 +3900,11 @@ async def retry_task_assets(task_id: str, response: Response, payload: dict = Bo
         requested_scope,
         payload.get("targets"),
     )
+    from src.text.storyboard_director import load_plan, planning_blocked
+    candidate = load_plan(task_id) or {}
+    if (any(target.get("asset_type") == "image" for target in targets)
+            and candidate.get("review_required") and planning_blocked(candidate)):
+        raise HTTPException(409, "分镜尚未通过审查，请先审查并修正；已有素材保留")
     active = mysql_client.get_active_task_operation(task_id)
     if active:
         requested_keys = {
@@ -5167,6 +5181,10 @@ async def update_segment(
         raise HTTPException(status_code=409, detail="预案已在其他页面更新，请刷新后重试")
     if next_version is None:
         raise HTTPException(status_code=500, detail="更新段落失败")
+    if ((text is not None and text != current.get("text"))
+            or (image_prompt is not None and image_prompt != (current.get("image_prompt") or ""))):
+        from src.text.storyboard_director import invalidate_review
+        invalidate_review(task_id, index=segment_index, image_prompt=image_prompt, text=text)
     task_manager.invalidate_task_cache(task_id)
     refreshed = mysql_client.get_task(task_id) or {}
     refreshed_segments = mysql_client.get_segments(task_id)

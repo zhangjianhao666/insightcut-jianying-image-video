@@ -1192,6 +1192,10 @@ class TaskExecutor:
             segment = by_index[index]
             stamp = uuid.uuid4().hex
             if target["asset_type"] == "image":
+                from src.text.storyboard_director import load_plan, planning_blocked
+                candidate = load_plan(task_id) or {}
+                if candidate.get("review_required") and planning_blocked(candidate):
+                    raise ValueError("分镜尚未通过审查，请先审查并修正；已有素材保留")
                 prompt = str(segment.get("image_prompt") or "").strip()
                 if not prompt:
                     raise ValueError("图片缺少提示词，不能直接重试")
@@ -2013,6 +2017,9 @@ class TaskExecutor:
                     ratio=ratio,
                     outline=director_outline,
                     target_duration=_task_generation_options(task_row).get("target_duration_seconds") if native_director else None,
+                    review_required=native_director,
+                    cancel_check=cancellation.raise_if_cancelled if cancellation else None,
+                    brief=str(task_row.get("original_input") or task_row.get("theme") or ""),
                 )
                 if native_director and (plan.get("status") == "failed" or len(plan.get("shots") or {}) != len(pipeline.segments)):
                     raise ValueError("导演逐镜规划未完成；预案已保留，请重新规划")
@@ -2325,6 +2332,10 @@ class TaskExecutor:
                 try:
                     if cancellation:
                         cancellation.raise_if_cancelled()
+                    from src.text.storyboard_director import load_plan, planning_blocked
+                    candidate = load_plan(task_id) or {}
+                    if candidate.get("review_required") and planning_blocked(candidate):
+                        raise ValueError("分镜尚未通过审查，请先审查并修正；已有素材保留")
                     path = pipeline.image_generator.generate(
                         prompt,
                         index=i,

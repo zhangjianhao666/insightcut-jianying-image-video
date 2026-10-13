@@ -18,6 +18,7 @@ router = APIRouter(prefix="/ai/native/video/kepu", tags=["video-first"])
 
 
 class StartVideoFirst(BaseModel):
+    local_only: bool = False
     confirm_paid_generation: bool = Field(default=False)
     duration: int | None = Field(default=None)
     force_new_failed: bool = Field(default=False)
@@ -45,6 +46,7 @@ def _view(task_id, task, segments, request):
     value["video_provider"] = shot_video_jobs.video_provider()
     value["duration_options"] = list(shot_video_jobs.duration_options())
     value["default_duration"] = shot_video_jobs.default_duration()
+    value["local_only_durations"] = [duration for duration in value["duration_options"] if video_first.local_only_ready(task_id, segments, task.get("ratio") or "16:9", duration)]
     if value.get("status") == "not_started":
         from src.media.minimax_i2v import is_h3_model
         value["subtitles"] = (shot_video_jobs.video_provider() == "minimax"
@@ -75,7 +77,7 @@ async def get_video_first(task_id: str, request: Request):
 @router.post("/tasks/{task_id}/video-first", status_code=202)
 async def start_video_first(task_id: str, data: StartVideoFirst, request: Request):
     task, segments = await asyncio.to_thread(_project, task_id)
-    if not data.confirm_paid_generation:
+    if not data.confirm_paid_generation and not data.local_only:
         raise HTTPException(400, "必须明确确认图生视频模型的付费调用")
     duration = shot_video_jobs.default_duration() if data.duration is None else data.duration
     options = shot_video_jobs.duration_options()
@@ -94,6 +96,7 @@ async def start_video_first(task_id: str, data: StartVideoFirst, request: Reques
             audio_mode=data.audio_mode,
             subtitles=data.subtitles,
             max_duration=data.max_duration,
+            local_only=data.local_only,
         )
     except video_first.VideoFirstError as error:
         raise HTTPException(409, str(error)) from None

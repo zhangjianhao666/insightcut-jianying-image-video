@@ -44,11 +44,14 @@ export function VideoFirstPanel({ taskId, segments = [], ratio = '16:9', product
   const activeSeconds = durationOptions.includes(seconds)
     ? seconds
     : (job.default_duration ?? durationOptions[0])
+  const localOnlyReady = job.local_only_durations?.includes(activeSeconds) === true
   const readyImages = useMemo(
     () => segments.filter(s => s.image_status === 'completed' && s.image_url).length,
     [segments],
   )
   const available = count > 0 && count <= 12 && readyImages === count
+  const directorRunning = ['planning', 'reviewing', 'repairing'].includes(review?.status)
+  const directorBlocked = directorRunning || review?.generation_blocked || ['failed', 'needs_revision'].includes(review?.status) || (review?.quality && review.quality.status !== 'passed')
   const activeFlow = ['queued', 'generating_assets', 'render_queued', 'rendering', 'cancelling']
     .includes(production?.state)
 
@@ -147,14 +150,14 @@ export function VideoFirstPanel({ taskId, segments = [], ratio = '16:9', product
     await updateH3('post', suffix, data)
   }
 
-  const generate = async () => {
+  const generate = async (localOnly = false) => {
     const missing = Math.max(0, count - (job.completed || 0))
     const estimate = missing * activeSeconds
     const referenceNotice = h3Reference?.mode === 'reference'
       ? '海螺 H3 多模态参考模式：分镜图片只是构图参考，不保证视频首帧一致。'
       : '普通首帧图生视频模式：严格以当前分镜首帧为输入。'
     const notice = `${referenceNotice}\n\n准备生成动态视频：${count} 个镜头，每段 ${activeSeconds} 秒。\n\n最多可能新调用 ${missing} 次图生视频，计费总秒数上限约 ${estimate} 秒（如有有效片段则复用，最终以服务商计费为准）。\n\n每段都会生成真正的 MP4；任何一段失败都不会用图片代替。音频策略：${activeAudioMode === 'mute' ? '移除模型原生音轨，后期统一配音' : '保留模型原生音效（不能保证跨镜头同一人声）'}。\n\n${retryPaid ? '你已勾选「允许重新提交失败任务」：可能产生额外费用。\n\n' : ''}确认开始？`
-    if (!window.confirm(notice)) return
+    if (!localOnly && !window.confirm(notice)) return
     setBusy(true)
     setError('')
     try {
@@ -163,7 +166,8 @@ export function VideoFirstPanel({ taskId, segments = [], ratio = '16:9', product
         method: 'post',
         data: {
           ...deliveryOptions,
-          confirm_paid_generation: true,
+          confirm_paid_generation: !localOnly,
+          local_only: localOnly,
           duration: activeSeconds,
           force_new_failed: retryPaid,
           audio_mode: activeAudioMode,
@@ -178,7 +182,7 @@ export function VideoFirstPanel({ taskId, segments = [], ratio = '16:9', product
     }
   }
   const replanDirector = async () => {
-    if (busy || running || activeFlow || review?.status === 'planning') return
+    if (busy || running || activeFlow || directorRunning) return
     setBusy(true)
     setError('')
     try {
@@ -186,6 +190,18 @@ export function VideoFirstPanel({ taskId, segments = [], ratio = '16:9', product
       setReview(current => ({ ...current, status: 'planning', error: null, can_replan: false }))
     } catch (e) {
       setError(e?.response?.data?.detail || '镜头重新规划无法启动，已有素材仍然保留')
+    } finally { setBusy(false) }
+  }
+  const reviewDirector = async () => {
+    if (busy || running || activeFlow || directorRunning) return
+    if (!window.confirm('审查并修正已有分镜会调用当前导演模型，产生 token 费用；最多进行一轮局部修正和复核。已有图片、音频与视频素材保留。确认继续？')) return
+    setBusy(true)
+    setError('')
+    try {
+      await request({ url: `${ROOT}/tasks/${encodeURIComponent(taskId)}/director/review`, method: 'post', data: { confirm_cost: true }, timeout: 30000 })
+      setReview(current => ({ ...current, status: 'reviewing', generation_blocked: true, can_review: false }))
+    } catch (e) {
+      setError(e?.response?.data?.detail || '分镜审查无法启动，已有素材仍然保留')
     } finally { setBusy(false) }
   }
   const retryDelivery = async () => {
@@ -317,8 +333,11 @@ export function VideoFirstPanel({ taskId, segments = [], ratio = '16:9', product
     ) : null}
     {review?.error ? <p role="alert">{review.error}</p> : null}
     {review?.status === 'planning' ? <p role="status">正在重新规划镜头，已有素材保留</p> : null}
+    {review?.status === 'interrupted' ? <p role="status">分镜审查或规划已中断，请明确重试；已有素材保留</p> : null}
+    {['reviewing', 'repairing'].includes(review?.status) ? <p role="status">{review.status === 'repairing' ? '正在局部修正分镜' : '正在独立审查分镜'}，已有素材保留</p> : null}
+    {review?.can_review ? <button type="button" className="button button-secondary" onClick={reviewDirector} disabled={busy || running || activeFlow || directorRunning}>审查并修正分镜（保留素材）</button> : null}
     {review && (review.can_replan || ['failed', 'unplanned'].includes(review.status) || (count > 0 && (review.shots?.length || 0) < count)) ? <div>
-      <button type="button" className="button button-secondary" onClick={replanDirector} disabled={busy || running || activeFlow || review.status === 'planning'}>重新规划镜头（保留素材）</button>
+      <button type="button" className="button button-secondary" onClick={replanDirector} disabled={busy || running || activeFlow || directorRunning}>重新规划镜头（保留素材）</button>
       <small>重新规划会保留已有素材；镜头提示变化可能使已有视频过期。完成规划后需明确确认才会提交付费视频。</small>
     </div> : null}
     {review ? <details className="video-first-continuity">
@@ -326,6 +345,10 @@ export function VideoFirstPanel({ taskId, segments = [], ratio = '16:9', product
       <p>IP：{review.ip?.name || '未绑定'}{review.ip?.version ? ` · v${review.ip.version}` : ''}。
         同一场景连续动作才使用 continue；全景切特写、反打等正常采用 cut。</p>
       {review.status === 'unplanned' ? <p>目前没有新版分镜规划，重新生成预案后才能检查镜头接续。</p> : null}
+      {review.quality ? <p>语义审查：{({ pending: '待审查', passed: '通过', needs_revision: '需要修正', needs_review: '候选已改变，需重新审查', failed: '未完成' })[review.quality.status] || review.quality.status} · 审查 {review.quality.review_rounds || 0} 轮 · 修正 {review.quality.repair_rounds || 0} 轮</p> : null}
+      {review.quality?.issues?.length ? <ul>{review.quality.issues.map((issue, n) => <li key={`${issue.code}-${n}`}>
+        {issue.index == null ? '全片' : `镜头 ${issue.index + 1}`}（{issue.severity === 'blocking' ? '阻塞' : '建议'}）：{issue.evidence}；需修改：{issue.required_change}
+      </li>)}</ul> : null}
       {review.warnings?.length ? <ul>
         {review.warnings.map((warning, n) => <li key={`${warning.index}-${warning.code}-${n}`}>
           {warning.index === null ? '全片' : `镜头 ${warning.index + 1}`}：{warning.message}
@@ -334,12 +357,16 @@ export function VideoFirstPanel({ taskId, segments = [], ratio = '16:9', product
       {review.shots?.map(shot => <div className="video-first-continuity-shot" key={shot.index}>
         <strong>镜头 {shot.index + 1} · {shot.scene_id} · {shot.transition_to_next}</strong>
         <p>机位：{shot.camera || '未设置'}；开场：{shot.start_state || '待补充'}</p>
+        {shot.purpose ? <p>画面作用：{shot.purpose}</p> : null}
+        {shot.image_prompt ? <p>首帧描述：{shot.image_prompt}</p> : null}
+        {shot.motion_prompt ? <p>动作脚本：{shot.motion_prompt}</p> : null}
         <p>收尾：{shot.end_state || '待补充'}；角色：{shot.character_ids?.join('、') || '未标识'}</p>
       </div>)}
       <small>这仍是基于规划状态和参考提示词的连续性控制，并非已实现模型原生尾帧续写；关键切镜需要人工审核。</small>
       <p>{review.audio_note}</p>
     </details> : null}
     <div className="video-first-actions">
+      {directorBlocked && localOnlyReady ? <button type="button" className="button button-secondary" disabled={busy || running || activeFlow || !validMaxDuration} onClick={() => { void generate(true) }}>仅本地拼接已有动态片段（不调用付费模型）</button> : null}
       <label>音频策略 <select value={activeAudioMode} disabled={running || activeFlow || busy}
         onChange={event => { void updateAudioMode(event.target.value) }}>
         <option value="native">保留模型原生声音（对白与环境声）</option>
@@ -357,14 +384,15 @@ export function VideoFirstPanel({ taskId, segments = [], ratio = '16:9', product
         允许重新提交失败镜头（可能额外收费）
       </label> : null}
       <button type="button" className="button button-primary"
-        onClick={generate}
-        disabled={review?.status === 'planning' || !validMaxDuration || !available || busy || running || activeFlow || referenceBusy || (h3Reference?.mode === 'reference' && !h3Reference?.supports_reference)}>
+        onClick={() => { void generate(false) }}
+        disabled={directorBlocked || !validMaxDuration || !available || busy || running || activeFlow || referenceBusy || (h3Reference?.mode === 'reference' && !h3Reference?.supports_reference)}>
         {busy ? '正在提交…' : job.status === 'completed' ? '重新检查并生成动态成片' : '生成全片 AI 动态视频'}
       </button>
       {running && !activeFlow ? <button type="button" className="button button-secondary" disabled={busy}
         onClick={cancelFutureCalls}>停止后续付费镜头</button> : null}
     </div>
     {referenceError && !h3Reference ? <small className="video-first-help" role="alert">{referenceError}</small> : null}
+    {directorBlocked ? <small className="video-first-help">分镜尚未通过审查，暂不能生成动态视频；已有素材保留。</small> : null}
     {!available ? <small className="video-first-help">
       {!count ? '请先完成 AI 分镜。' : count > 12
         ? '第一版最多 12 个分镜；请缩短脚本或调整分镜。'

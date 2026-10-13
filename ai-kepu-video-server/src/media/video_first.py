@@ -19,7 +19,7 @@ from pathlib import Path
 
 from src.config import Config
 from src.media import h3_references, shot_video_jobs, native_delivery
-from src.text.storyboard_director import DEFAULT_MOTION_PROMPT, load_plan, lookup_shot
+from src.text.storyboard_director import DEFAULT_MOTION_PROMPT, load_plan, lookup_shot, planning_blocked
 from src.text.native_dialogue import compile_video_prompt
 from src.text.continuity import compose_motion_prompt
 from src.utils.rendering import normalize_ratio
@@ -95,6 +95,33 @@ def _write(task_id, record):
         temporary.unlink(missing_ok=True)
 
 
+def candidate_direction(task_id, index, text):
+    """Read exact-narration candidates solely to match saved paid work."""
+    direction = lookup_shot(task_id, index, text)
+    plan = load_plan(task_id) or {}
+    narration = plan.get("segments") or []
+    if (not direction and planning_blocked(plan) and index < len(narration)
+            and narration[index] == text):
+        direction = (plan.get("shots") or {}).get(str(index)) or {}
+    return direction
+
+
+def local_only_ready(task_id, segments, ratio, duration):
+    """Require exact completed clips and local files; never dispatch providers."""
+    try:
+        shots = _shot_inputs(task_id, segments, ratio, duration)
+        return bool(shots) and all(
+            _matches_planned_clip(snapshot := shot_video_jobs.status(task_id, shot["index"], shot["image"]), shot)
+            and snapshot.get("prompt") == shot["motion_prompt"]
+            and snapshot.get("duration") == shot["duration"]
+            and (clip := shot_video_jobs.matching_video_path(task_id, {"segment_index": shot["index"], "image_path": shot["image"]}))
+            and Path(clip).is_file()
+            for shot in shots
+        )
+    except (ValueError, OSError, VideoFirstError):
+        return False
+
+
 def _shot_inputs(task_id, segments, ratio, duration):
     if not segments or len(segments) > MAX_SHOTS:
         raise VideoFirstError(f"视频优先模式支持 1–{MAX_SHOTS} 个分镜，建议先做短片验收")
@@ -113,7 +140,7 @@ def _shot_inputs(task_id, segments, ratio, duration):
         image = segment.get("image_path")
         if segment.get("image_status") != "completed" or not image or not Path(image).is_file():
             raise VideoFirstError(f"第 {index + 1} 个分镜的首帧图片尚未完成")
-        direction = lookup_shot(task_id, index, segment.get("text") or "")
+        direction = candidate_direction(task_id, index, segment.get("text") or "")
         motion_prompt = str(direction.get("motion_prompt") or "").strip()
         if not motion_prompt:
             motion_prompt = DEFAULT_MOTION_PROMPT
@@ -187,7 +214,7 @@ def _current(task_id, segments, ratio=None):
             except OSError:
                 signature = None
             shot_text = str(seg.get("text") or "")
-            current_direction = lookup_shot(task_id, shot["index"], shot_text)
+            current_direction = candidate_direction(task_id, shot["index"], shot_text)
             current_prompt = (compose_motion_prompt(load_plan(task_id) or {},
                                                      shot["index"], current_direction.get("motion_prompt")
                                                      or DEFAULT_MOTION_PROMPT)
@@ -397,7 +424,7 @@ def request_stop(task_id):
 
 
 def start(task_id, segments, *, ratio="16:9", duration=None,
-          confirmed=False, force_new_failed=False, audio_mode=None, subtitles=None, max_duration=None):
+          confirmed=False, force_new_failed=False, audio_mode=None, subtitles=None, max_duration=None, local_only=False):
     """One explicit approval for up to MAX_SHOTS paid video generations."""
     if not confirmed:
         raise VideoFirstError("请确认所有待生成镜头将按云端视频模型用量计费")
@@ -425,6 +452,8 @@ def start(task_id, segments, *, ratio="16:9", duration=None,
             native_delivery.preflight()
         except native_delivery.DeliveryError as error:
             raise VideoFirstError(str(error)) from None
+    if local_only and not local_only_ready(task_id, segments, ratio, duration):
+        raise VideoFirstError("已有片段不再完全匹配，不能仅本地拼接；请重新审查分镜")
     shots = _shot_inputs(task_id, segments, ratio, duration)
     fingerprint = _fingerprint(shots, ratio, audio_mode)
     with _LOCK:
@@ -443,7 +472,7 @@ def start(task_id, segments, *, ratio="16:9", duration=None,
                 shot_video_jobs.status(task_id, shot["index"], shot["image"]), shot
             ) for shot in shots)
             plan = load_plan(task_id) or {}
-            if needs_paid and (plan.get("status") == "failed"
+            if needs_paid and (planning_blocked(plan)
                                or set(plan.get("shots") or {}) != {str(i) for i in range(len(shots))}):
                 raise VideoFirstError("导演规划未完整覆盖镜头，请重新规划并审核后再确认付费生成；已有素材已保留")
         record = {
@@ -483,6 +512,8 @@ def start(task_id, segments, *, ratio="16:9", duration=None,
                     raise VideoFirstError("首帧已修改，停止后续付费请求，请重新确认")
                 current = shot_video_jobs.status(task_id, shot["index"], shot["image"])
                 if not _matches_planned_clip(current, shot):
+                    if local_only:
+                        raise VideoFirstError("已有片段已变化，仅本地拼接不会提交付费请求")
                     # An image-only signature is insufficient: a clip made
                     # for an older director prompt must not be silently
                     # inserted into the new approved storyboard.

@@ -59,3 +59,62 @@ it('mute generation disables native captions and omits a dialogue duration budge
   expect(request).toHaveBeenCalledWith(expect.objectContaining({ method: 'post', data: expect.objectContaining({ audio_mode: 'mute', subtitles: false, max_duration: null }) }))
   confirm.mockRestore()
 })
+it('keeps rejected candidate and evidence visible while blocking generation and confirming review cost', async () => {
+  request.mockImplementation(async config => {
+    if (config.url.endsWith('/continuity')) return { status: 'failed', generation_blocked: true, can_review: true, shots: [{ index: 0, camera: '保留机位', start_state: '保留开场' }], quality: { status: 'needs_revision', issues: [{ index: 0, severity: 'blocking', code: 'mechanism', evidence: '机制没有画出来', required_change: '补充可见因果' }] } }
+    return config.url.endsWith('/video-first') ? { status: 'not_started', duration_options: [5] } : {}
+  })
+  const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+  render(<VideoFirstPanel taskId="task" segments={segments} />)
+  const button = await screen.findByRole('button', { name: '审查并修正分镜（保留素材）' })
+  expect(screen.getByRole('button', { name: '生成全片 AI 动态视频' })).toBeDisabled()
+  expect(screen.getByText(/机制没有画出来/)).toBeInTheDocument()
+  expect(screen.getByText(/保留机位/)).toBeInTheDocument()
+  await userEvent.click(button)
+  expect(request.mock.calls.some(([config]) => config.url.endsWith('/director/review'))).toBe(false)
+  confirm.mockReturnValue(true)
+  await userEvent.click(button)
+  expect(confirm).toHaveBeenCalledWith(expect.stringContaining('token 费用'))
+  expect(request).toHaveBeenCalledWith(expect.objectContaining({ url: '/ai/native/video/kepu/tasks/task/director/review', data: { confirm_cost: true } }))
+  expect(await screen.findByText('正在独立审查分镜，已有素材保留')).toBeInTheDocument()
+  confirm.mockRestore()
+})
+it('enables explicit retries for an interrupted director and keeps generation blocked', async () => {
+  request.mockImplementation(async config => config.url.endsWith('/continuity')
+    ? { status: 'interrupted', generation_blocked: true, can_review: true, can_replan: true, shots: [{ index: 0 }] }
+    : config.url.endsWith('/video-first') ? { status: 'not_started', duration_options: [5] } : {})
+  render(<VideoFirstPanel taskId="task" segments={segments} />)
+  expect(await screen.findByText('分镜审查或规划已中断，请明确重试；已有素材保留')).toBeInTheDocument()
+  expect(screen.getByRole('button', { name: '审查并修正分镜（保留素材）' })).toBeEnabled()
+  expect(screen.getByRole('button', { name: '重新规划镜头（保留素材）' })).toBeEnabled()
+  expect(screen.getByRole('button', { name: '生成全片 AI 动态视频' })).toBeDisabled()
+  expect(request.mock.calls.some(([config]) => config.method === 'post')).toBe(false)
+})
+it('keeps active review retry buttons disabled', async () => {
+  request.mockImplementation(async config => config.url.endsWith('/continuity')
+    ? { status: 'reviewing', generation_blocked: true, can_review: true, can_replan: true, shots: [{ index: 0 }] }
+    : config.url.endsWith('/video-first') ? { status: 'not_started', duration_options: [5] } : {})
+  render(<VideoFirstPanel taskId="task" segments={segments} />)
+  expect(await screen.findByRole('button', { name: '审查并修正分镜（保留素材）' })).toBeDisabled()
+  expect(screen.getByRole('button', { name: '重新规划镜头（保留素材）' })).toBeDisabled()
+})
+it('offers server verified local concat for blocked plans without paid confirmation', async () => {
+  request.mockImplementation(async config => config.url.endsWith('/continuity')
+    ? { status: 'failed', generation_blocked: true }
+    : config.url.endsWith('/video-first') ? { status: 'not_started', duration_options: [5], local_only_durations: [5] } : {})
+  const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+  render(<VideoFirstPanel taskId="task" segments={segments} />)
+  const button = await screen.findByRole('button', { name: '仅本地拼接已有动态片段（不调用付费模型）' })
+  expect(screen.getByRole('button', { name: '生成全片 AI 动态视频' })).toBeDisabled()
+  await userEvent.click(button)
+  expect(confirm).not.toHaveBeenCalled()
+  expect(request).toHaveBeenCalledWith(expect.objectContaining({ method: 'post', data: expect.objectContaining({ local_only: true, confirm_paid_generation: false }) }))
+  confirm.mockRestore()
+})
+it('shows the safe payment reason from blocked director report', async () => {
+  request.mockImplementation(async config => config.url.endsWith('/continuity')
+    ? { status: 'failed', generation_blocked: true, error: '服务商要求付费，请检查账号余额或计费状态后重试。' }
+    : config.url.endsWith('/video-first') ? { status: 'not_started', duration_options: [5] } : {})
+  render(<VideoFirstPanel taskId="task" segments={segments} />)
+  expect(await screen.findByText('服务商要求付费，请检查账号余额或计费状态后重试。')).toBeInTheDocument()
+})

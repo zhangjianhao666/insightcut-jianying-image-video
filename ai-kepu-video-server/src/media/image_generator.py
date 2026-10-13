@@ -119,11 +119,18 @@ class ImageGenerator:
         plan = {}
         task_id = getattr(self, "project_task_id", None)
         if task_id:
-            from src.text.storyboard_director import load_plan, lookup_shot
+            from src.text.storyboard_director import load_plan, lookup_shot, planning_blocked
             from src.database import mysql_client
-            segment = next((s for s in mysql_client.get_segments(task_id) if s["segment_index"] == index), None)
             plan = load_plan(task_id) or {}
+            if plan.get("review_required") and planning_blocked(plan):
+                raise ValueError("导演分镜尚未通过审查，已有素材已保留，请审查后再生成图片")
+            segment = next((s for s in mysql_client.get_segments(task_id) if s["segment_index"] == index), None)
             direction = lookup_shot(task_id, index, (segment or {}).get("text"))
+            if plan.get("review_required"):
+                from src.text.image_contract import MARKER
+                base_prompt = str(prompt or "").split(MARKER, 1)[0].split(". PROJECT-WIDE VISUAL CONTINUITY:", 1)[0].strip()
+                if not segment or not direction or base_prompt != str(direction.get("image_prompt") or "").strip():
+                    raise ValueError("当前图片描述或旁白与已审查分镜不一致，请先重新审查")
         from src.text.image_contract import compile_shot
         contract = compile_shot(prompt, plan.get("visual_bible") or {}, shot=direction) if direction else None
         if contract:

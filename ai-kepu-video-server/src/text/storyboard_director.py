@@ -9,6 +9,7 @@ import logging
 import os
 import re
 import uuid
+from copy import deepcopy
 from pathlib import Path
 
 from src.config import Config
@@ -16,7 +17,51 @@ from src.text.continuity import normalize_boundaries, normalize_shot, audit_plan
 
 log = logging.getLogger(__name__)
 _PLAN_VERSION = 4
-_PROMPT_VERSION = 3
+_PROMPT_VERSION = 4
+_QUALITY_VERSION = 2
+
+
+def _candidate_digest(plan):
+    return hashlib.sha256(json.dumps(
+        {key: plan.get(key) for key in ("segments", "visual_bible", "shots", "review_context")},
+        ensure_ascii=False, sort_keys=True,
+    ).encode()).hexdigest()
+
+
+def planning_blocked(plan):
+    """Pending/rejected candidates are readable but cannot fund new media."""
+    if not plan:
+        return False  # Legacy tasks without a director keep their old workflow.
+    if plan.get("status") in {"failed", "planning", "reviewing", "repairing"}:
+        return True
+    if plan.get("review_required"):
+        quality = plan.get("quality") or {}
+        return (plan.get("status") != "completed"
+                or quality.get("version") != _QUALITY_VERSION
+                or quality.get("status") != "passed"
+                or quality.get("candidate_digest") != _candidate_digest(plan))
+    return False
+
+
+def invalidate_review(task_id, *, index=None, image_prompt=None, text=None, style=None, ratio=None):
+    """Keep candidates/assets visible after a workspace edit; require a new review."""
+    plan = load_plan(task_id)
+    if not plan or not plan.get("review_required"):
+        return
+    if index is not None:
+        if image_prompt is not None and str(index) in plan.get("shots", {}):
+            plan["shots"][str(index)]["image_prompt"] = image_prompt
+        if text is not None and 0 <= index < len(plan.get("segments", [])):
+            plan["segments"][index] = text
+            plan.setdefault("review_context", {})["script"] = "".join(plan["segments"])
+    context = plan.setdefault("review_context", {})
+    if style is not None:
+        context["style"] = style
+    if ratio is not None:
+        context["ratio"] = ratio
+    plan.setdefault("quality", {}).update(status="pending")
+    plan.update(status="completed", error=None)
+    _write(task_id, plan)
 
 
 def _director_output_budget(generator, fallback):
@@ -110,7 +155,7 @@ def _normalize_plan(raw, count):
         if not 0 <= index < count:
             continue
         image_prompt = str(shot.get("image_prompt") or "").strip()
-        motion_prompt = _standardize_motion_prompt(shot.get("motion_prompt"))[:1800]
+        motion_prompt = _standardize_motion_prompt(shot.get("motion_prompt"))
         if len(image_prompt) > 1800:
             raise ValueError("图片描述过长，请导演精简，禁止截断")
         if len(image_prompt) < 10:
@@ -127,6 +172,63 @@ def _normalize_plan(raw, count):
     return {"visual_bible": clean_bible, "shots": normalize_boundaries(shots)}
 
 
+def _validate_source(source, count, *, reviewed=False, outline=None, target_duration=None):
+    shots = source.get("shots") or []
+    if count <= 12 and (len(shots) != count or {s.get("index") for s in shots} != set(range(count))):
+        raise ValueError("incomplete_shots")
+    if count > 12:
+        return
+    from src.text.image_contract import compile_shot
+    for shot in shots:
+        motion = _standardize_motion_prompt(shot.get("motion_prompt"))
+        parts = re.split("[;；]", motion)
+        numbered = re.findall("[①②③④]", motion)
+        if (len(motion) < (1 if reviewed else 150) or len(motion) > 1800
+                or len(parts) < 4
+                or any(not re.sub("^[①②③④]", "", part.strip()).strip() for part in parts)
+                or (numbered and numbered != list("①②③④"))
+                or not re.search(r"\[[A-Za-z][^\]]*\]", motion)
+                or any(not shot.get(key) for key in ("camera", "start_state", "end_state"))):
+            raise ValueError("invalid_shot_structure")
+        if reviewed:
+            compile_shot(shot.get("image_prompt"), source.get("visual_bible") or {}, shot=shot, max_length=5000)
+            if outline and shot.get("duration") != outline[shot["index"]]["duration"]:
+                raise ValueError("invalid_duration_budget")
+    if target_duration and not outline and sum(s.get("duration", 0) for s in shots) != target_duration:
+        raise ValueError("invalid_duration_budget")
+
+
+def review_existing_plan(task_id, generator, *, script=None, style=None, ratio=None, cancel_check=None):
+    from src.text.ip_library import project_ip
+    from src.text.storyboard_quality import run_quality_loop
+    record = load_plan(task_id)
+    if not record or not record.get("shots") or len(record.get("segments") or []) > 12:
+        raise ValueError("没有可审查的完整短片候选")
+    context = record.get("review_context") or {}
+    script = script if script is not None else context.get("script") or "".join(record["segments"])
+    if re.sub(r"\s+", "", script) != re.sub(r"\s+", "", "".join(record["segments"])):
+        raise ValueError("文稿已变化，请先重新规划")
+    style = style if style is not None else context.get("style") or ""
+    ratio = ratio if ratio is not None else context.get("ratio") or "16:9"
+    source = {"visual_bible": record["visual_bible"],
+              "shots": [dict(s, index=int(k)) for k, s in record["shots"].items()]}
+    record["review_context"] = {**context, "script": script, "style": style, "ratio": ratio}
+    record.update(review_required=True, status="reviewing", quality={
+        "version": _QUALITY_VERSION, "status": "pending", "issues": [],
+        "review_rounds": 0, "repair_rounds": 0,
+    })
+    _write(task_id, record)
+    try:
+        _validate_source(source, len(record["segments"]), reviewed=True, outline=record.get("outline"))
+    except (ValueError, TypeError, KeyError):
+        record["quality"]["status"] = "failed"
+        record.update(status="failed", error={"stage": "validation", "category": "invalid_shot_structure"})
+        _write(task_id, record)
+        return record
+    return run_quality_loop(task_id, record, generator, script=script, style=style, ratio=ratio,
+                            ip_profile=project_ip(task_id), cancel_check=cancel_check)
+
+
 def load_plan(task_id):
     path = _location(task_id)
     try:
@@ -140,7 +242,7 @@ def load_plan(task_id):
 
 def lookup_shot(task_id, index, text=None):
     plan = load_plan(task_id)
-    if not plan or plan.get("status") == "failed":
+    if not plan or planning_blocked(plan):
         return {}
     try:
         index = int(index)
@@ -158,6 +260,10 @@ def _write(task_id, plan):
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     try:
+        if path.is_file():
+            history = path.parent / "history" / str(task_id)
+            history.mkdir(parents=True, exist_ok=True)
+            (history / f"{uuid.uuid4().hex}.json").write_bytes(path.read_bytes())
         temporary.write_text(json.dumps(plan, ensure_ascii=False), encoding="utf-8")
         os.replace(temporary, path)
     finally:
@@ -172,7 +278,7 @@ def record_planning_failure(task_id, *, stage, category, segments):
     log.warning("[%s] 分镜导演规划失败 stage=%s category=%s", task_id, stage, category)
 
 
-def plan_storyboard(task_id, generator, *, script, segments, summary, style, ratio, force=False, outline=None, target_duration=None):
+def plan_storyboard(task_id, generator, *, script, segments, summary, style, ratio, force=False, outline=None, target_duration=None, review_required=False, cancel_check=None, brief=""):
     """Build once per text/style revision. On model failure, caller falls back
     to individual image prompts. This must not erase existing shot assets.
     """
@@ -193,10 +299,10 @@ def plan_storyboard(task_id, generator, *, script, segments, summary, style, rat
             outline = [{"text": text, "duration": old_shots[str(i)]["duration"],
                         "purpose": old_shots[str(i)].get("purpose") or old_shots[str(i)].get("camera") or ""}
                        for i, text in enumerate(segments)]
-    fingerprint = _signature(script, segments, summary, style + profile_fingerprint + (json.dumps(outline, ensure_ascii=False) if outline else "") + (str(target_duration) if target_duration else ""), ratio)
+    fingerprint = _signature(script, segments, summary, style + profile_fingerprint + (json.dumps(outline, ensure_ascii=False) if outline else "") + (str(target_duration) if target_duration else "") + (f":quality-v{_QUALITY_VERSION}:" + brief if review_required else ""), ratio)
     previous = load_plan(task_id)
     if (not force and previous and previous.get("fingerprint") == fingerprint
-            and previous.get("status") != "failed"
+            and not planning_blocked(previous)
             and (len(segments) > 12 or set(previous.get("shots") or {}) ==
                  {str(i) for i in range(len(segments))})):
         return previous
@@ -215,10 +321,12 @@ def plan_storyboard(task_id, generator, *, script, segments, summary, style, rat
         "match_cut 则只匹配视觉元素或动作方向，不要求两帧像素相同。"
         "先理解这一集的叙事推进，再自主决定每镜的视觉表达、人物是否出镜、景别、机位、动作和节奏。"
         "画面应帮助观众理解当前信息，不能只把每句旁白换成相似的主持人站姿；不要为求变化无故切场景。"
+        "先明确旁白中的因果或叙事关系，再选择实际能表现该关系的动作；不得用无关道具或装饰性动作充当解释证据。"
         "全片始终绑定同一个 IP、服装和画风。人物出现时外貌、发型、体型、服装与配饰必须一致；"
         "只露手或衣袖时，肤色、衣袖和可见配饰仍沿用同一人物设定。人物不出镜不代表更换讲述者。"
         "同一实际场景的布局、道具和光线保持可解释的连续性；摄影语言可随叙事需要变化，画风不能漂移。"
         "environment_lock 需给出本集场景的稳定相对位置关系，镜头的画面左右要与机位相符，不混淆物理方位和屏幕方位。"
+        "全局约束只锁定稳定的身份、画风和场景布局；可变化的道具位置、开合、持握和时间状态写入各镜头，不能全局冻结而与动作或回忆冲突。"
         "返回纯 JSON 对象：visual_bible(character_lock, environment_lock, art_direction,"
         " camera_language, negative_rules) 和 shots 列表。"
         "shots 每项必须包含：index(0开始)、scene_id(同一实际场景用同一编号，如 scene_01)、"
@@ -286,11 +394,20 @@ def plan_storyboard(task_id, generator, *, script, segments, summary, style, rat
     error = None
     stage = "provider"
     validation_category = "incomplete_shots"
+    parsed = {"visual_bible": {}, "shots": {}}
+    if saved.get("segments") == list(segments):
+        parsed = {key: deepcopy(saved.get(key) or {}) for key in ("visual_bible", "shots")}
+    pending = {"version": _PLAN_VERSION, "status": "planning", "segments": list(segments),
+               "outline": outline, **deepcopy(parsed), "review_required": review_required}
+    _write(task_id, pending)
+    cancelled = None
     try:
         if ip_profile and ip_profile.get("reference_image") and not (ip_profile.get("visual_identity") and ip_profile.get("outfit")):
             stage = "validation"
             validation_category = "reference_identity_missing"
             raise ValueError("IP参考图已绑定，但外观和服装文字约束不完整")
+        if cancel_check:
+            cancel_check()
         raw = generator._call_api(
             messages=[{"role": "user", "content": payload}],
             max_tokens=_director_output_budget(
@@ -302,35 +419,23 @@ def plan_storyboard(task_id, generator, *, script, segments, summary, style, rat
         source = _json_object(raw)
         parsed = _normalize_plan(source, len(segments))
         stage = "validation"
-        if target_duration and not outline:
-            if sum(shot.get("duration", 0) for shot in parsed["shots"].values()) != target_duration:
-                raise ValueError("invalid_duration_budget")
-        if compact and set(parsed["shots"]) != {str(i) for i in range(len(segments))}:
-            raise ValueError("incomplete_shots")
-        if compact:
-            validation_category = "invalid_shot_structure"
-            for shot in source.get("shots") or []:
-                motion = _standardize_motion_prompt(shot.get("motion_prompt"))
-                parts = re.split("[;；]", motion)
-                numbered = re.findall("[①②③④]", motion)
-                if (not 150 <= len(motion) <= 1800
-                        or len(parts) < 4
-                        or any(not re.sub("^[①②③④]", "", part.strip()).strip() for part in parts)
-                        or (numbered and numbered != list("①②③④"))
-                        or not re.search(r"\[[A-Za-z][^\]]*\]", motion)
-                        or any(not shot.get(key) for key in ("camera", "start_state", "end_state"))):
-                    raise ValueError("invalid_shot_structure")
+        validation_category = "invalid_shot_structure"
+        _validate_source(source, len(segments), reviewed=review_required, outline=outline, target_duration=target_duration)
     except Exception as failure:
         # Preserve original reliable generation path on model/JSON failure.
         from src.api.error_model import classify_exception
         safe = classify_exception(failure)
         category = (safe.code.value if stage == "provider"
                     else "invalid_json" if stage == "parse" else validation_category)
+        if stage == "validation" and str(failure) in {"incomplete_shots", "invalid_duration_budget", "invalid_shot_structure"}:
+            category = str(failure)
         error = {"stage": stage, "category": category}
         if stage == "provider":
             error.update(safe_message=safe.safe_message, retryable=safe.retryable)
         log.warning("[%s] 分镜导演规划失败 stage=%s category=%s", task_id, stage, category)
-        parsed = {"visual_bible": {}, "shots": {}}
+        from src.api.task_runtime import TaskCancelled
+        if isinstance(failure, TaskCancelled):
+            cancelled = failure
     if ip_bible:
         # Series identity always overrides per-episode model improvisation.
         parsed["visual_bible"] = {
@@ -342,15 +447,27 @@ def plan_storyboard(task_id, generator, *, script, segments, summary, style, rat
         "ip_id": (ip_profile or {}).get("ip_id"),
         "segments": list(segments), "outline": outline, "visual_bible": parsed["visual_bible"],
         "shots": parsed["shots"],
+        "review_required": review_required,
+        "review_context": {"script": script, "style": style, "ratio": ratio, "brief": brief},
     }
-    if outline and not error:
+    if outline:
         for i, item in enumerate(outline):
-            shot = record["shots"][str(i)]
-            shot.update(duration=item["duration"], narrative_purpose=item["purpose"])
+            shot = record["shots"].get(str(i))
+            if not shot:
+                continue
+            shot.update(narrative_purpose=item["purpose"])
+            if not error:
+                shot["duration"] = item["duration"]
             if not shot.get("purpose"):
                 shot["purpose"] = item["purpose"]
     record["continuity_warnings"] = audit_plan(record)
     _write(task_id, record)
+    if cancelled:
+        raise cancelled
+    if review_required and not error:
+        from src.text.storyboard_quality import run_quality_loop
+        return run_quality_loop(task_id, record, generator, script=script, style=style, ratio=ratio,
+                                ip_profile=ip_profile, cancel_check=cancel_check)
     return record
 
 

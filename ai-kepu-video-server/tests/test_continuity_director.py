@@ -362,6 +362,8 @@ def test_explicit_replan_is_background_and_preserves_assets(monkeypatch, tmp_pat
     from src.api import continuity_routes as routes
     from src.api.task_runtime import TaskRuntimeRegistry
     monkeypatch.setattr(Config, 'BASE_DIR', tmp_path)
+    monkeypatch.setattr(routes.mysql_client, 'sync_director_image_prompts', lambda *args, **kwargs: 1)
+    monkeypatch.setattr(routes.shot_video_jobs, 'video_provider', lambda: 'wan')
     task = {'task_id': 'replan', 'script_text': '原文', 'summary': '总结', 'style': '卡通', 'ratio': '16:9'}
     segments = [{'segment_index': 0, 'text': '第一句', 'image_path': '/saved/frame.png'}]
     updates = []

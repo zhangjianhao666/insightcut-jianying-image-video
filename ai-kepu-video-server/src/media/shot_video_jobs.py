@@ -179,6 +179,17 @@ def matching_video_path(task_id, segment):
     return None
 
 
+def _check_new_submission(task_id):
+    from src.text.storyboard_director import load_plan, planning_blocked
+    plan = load_plan(task_id) or {}
+    required = plan.get("review_required")
+    if not required and plan and video_provider() == "minimax":
+        from src.media.minimax_i2v import is_h3_model
+        required = is_h3_model(_video_config().get("model"))
+    if required and planning_blocked(plan):
+        raise ValueError("导演分镜尚未通过审查，已有素材与远端任务已保留，请审查后再确认付费生成")
+
+
 def start(task_id, segment_index, image_path, prompt, *, duration=None, force_new=False, base=None, provider_factory=None, reference_assets=None, cancellation=None):
     """Explicit user action only. Returns immediately; no paid batch dispatch."""
     image_path = str(Path(image_path).resolve())
@@ -213,13 +224,15 @@ def start(task_id, segment_index, image_path, prompt, *, duration=None, force_ne
         )
         if not force_new and same_request and existing.get("status") == "completed":
             return existing
-        # Constructing the adapter checks credentials before creating any job.
-        adapter_class = provider_factory or provider_class()
-        provider = adapter_class()
         reuse_id = (
             existing.get("provider_task_id") if same_request and not force_new
             and existing.get("status") in {"interrupted", "failed", "cancelled"} else None
         )
+        if not reuse_id:
+            _check_new_submission(task_id)
+        # Constructing the adapter checks credentials before creating any job.
+        adapter_class = provider_factory or provider_class()
+        provider = adapter_class()
         # A child retains a runtime lease after its parent exits. Deletion and
         # shutdown must wait for provider polling and local writes to drain.
         lease_id = "shot-video:" + uuid.uuid4().hex
@@ -249,13 +262,15 @@ def start(task_id, segment_index, image_path, prompt, *, duration=None, force_ne
                     cancellation.raise_if_cancelled()
                 if record["provider_task_id"]:
                     task = record["provider_task_id"]
-                elif reference_assets is not None:
-                    task = provider.submit(
-                        image_path, prompt, duration=duration,
-                        reference_assets=reference_assets,
-                    )
                 else:
-                    task = provider.submit(image_path, prompt, duration=duration)
+                    _check_new_submission(task_id)
+                    if reference_assets is not None:
+                        task = provider.submit(
+                            image_path, prompt, duration=duration,
+                            reference_assets=reference_assets,
+                        )
+                    else:
+                        task = provider.submit(image_path, prompt, duration=duration)
                 record["provider_task_id"] = task
                 with _lock:
                     _write(task_id, segment_index, record, base)

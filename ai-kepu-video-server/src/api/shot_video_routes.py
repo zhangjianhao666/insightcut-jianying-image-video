@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 
 from src.database import mysql_client
 from src.media import h3_references, shot_video_jobs
-from src.text.storyboard_director import load_plan, lookup_shot
+from src.text.storyboard_director import load_plan, lookup_shot, planning_blocked
 from src.text.native_dialogue import compile_video_prompt
 from src.text.continuity import compose_motion_prompt
 from src.media.minimax_i2v import MinimaxVideoError
@@ -37,10 +37,19 @@ def _segment(task_id: str, index: int) -> dict:
     return segment
 
 
+def _candidate_direction(task_id, index, text):
+    direction = lookup_shot(task_id, index, text)
+    plan = load_plan(task_id) or {}
+    narration = plan.get("segments") or []
+    if not direction and planning_blocked(plan) and index < len(narration) and narration[index] == text:
+        direction = (plan.get("shots") or {}).get(str(index)) or {}
+    return direction
+
+
 def _view(task_id: str, index: int, segment: dict, request: Request) -> dict:
     item = shot_video_jobs.status(task_id, index, segment.get("image_path"))
     state = item.get("status", "not_generated")
-    current_shot = lookup_shot(task_id, index, segment.get("text") or "")
+    current_shot = _candidate_direction(task_id, index, segment.get("text") or "")
     try:
         fingerprint = h3_references.fingerprint_now(
             task_id, segment.get("image_path"), current_shot.get("scene_id") or "",
@@ -80,7 +89,7 @@ async def generate_shot_video(
     # Explicit action starts a paid call. No automatic dispatch from project confirmation.
     if data.force_new and shot_video_jobs.status(task_id, segment_index).get("status") == "running":
         raise HTTPException(409, "当前分镜已有生成任务")
-    direction = lookup_shot(task_id, segment_index, segment.get("text") or "")
+    direction = _candidate_direction(task_id, segment_index, segment.get("text") or "")
     composed_prompt = (
         compose_motion_prompt(load_plan(task_id) or {}, segment_index, data.prompt)
         if direction else data.prompt
@@ -115,7 +124,7 @@ async def generate_shot_video(
 async def get_shot_video_file(task_id: str, segment_index: int):
     segment = await asyncio.to_thread(_segment, task_id, segment_index)
     path = shot_video_jobs.matching_video_path(task_id, segment)
-    shot = lookup_shot(task_id, segment_index, segment.get("text") or "")
+    shot = _candidate_direction(task_id, segment_index, segment.get("text") or "")
     stored = shot_video_jobs.status(task_id, segment_index, segment.get("image_path"))
     try:
         current = h3_references.fingerprint_now(

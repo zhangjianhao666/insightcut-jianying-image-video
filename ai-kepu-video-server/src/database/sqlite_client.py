@@ -1933,6 +1933,57 @@ class SQLiteClient(ReliabilityStore, ProductionStore):
         finally:
             conn.close()
 
+    def sync_director_image_prompts(self, task_id: str, prompts: Dict, *,
+                                    expected_plan_version: int, expected_segments: List[str]) -> Optional[int]:
+        """Apply approved raw prompts atomically without removing prior media."""
+        from src.text.image_contract import MARKER
+
+        def base(value):
+            return str(value or "").split(MARKER, 1)[0].split(". PROJECT-WIDE VISUAL CONTINUITY:", 1)[0].strip()
+
+        if not self._initialized:
+            self._init_db()
+        if not self._initialized:
+            return None
+        conn = self._get_conn()
+        try:
+            cur = conn.cursor()
+            cur.execute("BEGIN IMMEDIATE")
+            task = cur.execute("SELECT plan_version FROM tasks WHERE task_id=?", (task_id,)).fetchone()
+            if not task:
+                return None
+            current = int(task["plan_version"] or 0)
+            rows = cur.execute("SELECT * FROM task_segments WHERE task_id=? ORDER BY segment_index", (task_id,)).fetchall()
+            if current != int(expected_plan_version) or [row["text"] or "" for row in rows] != list(expected_segments):
+                return -1
+            by_index = {int(row["segment_index"]): row for row in rows}
+            if any(int(index) not in by_index or not base(prompt) for index, prompt in prompts.items()):
+                return None
+            changed = False
+            for index, prompt in prompts.items():
+                row = by_index[int(index)]
+                if base(row["image_prompt"]) == base(prompt):
+                    continue
+                status = "stale" if row["image_path"] and Path(row["image_path"]).is_file() else "pending"
+                cur.execute("""UPDATE task_segments SET image_prompt=?, image_status=?,
+                    prompt_status='completed', prompt_needs_review=0,
+                    prompt_error=NULL, prompt_error_code=NULL, prompt_error_meta_json=NULL,
+                    image_error=NULL, image_error_code=NULL, image_error_meta_json=NULL,
+                    updated_at=datetime('now','localtime') WHERE task_id=? AND segment_index=?""",
+                            (base(prompt), status, task_id, int(index)))
+                changed = True
+            next_version = current + int(changed)
+            if changed:
+                cur.execute("UPDATE tasks SET plan_version=?, updated_at=datetime('now','localtime') WHERE task_id=?", (next_version, task_id))
+            conn.commit()
+            return next_version
+        except Exception:
+            conn.rollback()
+            logger.error("Approved director image prompt synchronization failed")
+            return None
+        finally:
+            conn.close()
+
     def replace_plan_segments(
         self,
         task_id: str,
